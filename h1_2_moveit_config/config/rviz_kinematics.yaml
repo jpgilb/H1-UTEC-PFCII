@@ -1,0 +1,13 @@
+rviz:
+  ros__parameters:
+    robot_description_kinematics.left_arm.kinematics_solver: "kdl_kinematics_plugin/KDLKinematicsPlugin"
+    robot_description_kinematics.left_arm.kinematics_solver_search_resolution: "0.005"
+    robot_description_kinematics.left_arm.kinematics_solver_timeout: "0.005"
+
+    robot_description_kinematics.right_arm.kinematics_solver: "kdl_kinematics_plugin/KDLKinematicsPlugin"
+    robot_description_kinematics.right_arm.kinematics_solver_search_resolution: "0.005"
+    robot_description_kinematics.right_arm.kinematics_solver_timeout: "0.005"
+
+    robot_description_kinematics.torso.kinematics_solver: "kdl_kinematics_plugin/KDLKinematicsPlugin"
+    robot_description_kinematics.torso.kinematics_solver_search_resolution: "0.005"
+    robot_description_kinematics.torso.kinematics_solver_timeout: "0.005"

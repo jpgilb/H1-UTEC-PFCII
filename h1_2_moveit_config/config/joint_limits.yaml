@@ -200,7 +200,6 @@ joint_limits:
     max_acceleration: 0.0
   torso_joint:
     has_velocity_limits: true
-    max_velocity: 2.0
+    max_velocity: 23.0
     has_acceleration_limits: false
-    max_acceleration: 1.0
-
+    max_acceleration: 0.0
