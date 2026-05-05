@@ -376,21 +376,21 @@
   <actuator>
     <position name="torso_joint" joint="torso_joint" kp="120" forcerange="-120 120" ctrlrange="-2.35 2.35"/>
 
-    <position name="left_shoulder_pitch_joint" joint="left_shoulder_pitch_joint" kp="160" forcerange="-80 80" ctrlrange="-3.14 1.57"/>
-    <position name="left_shoulder_roll_joint" joint="left_shoulder_roll_joint" kp="160" forcerange="-80 80" ctrlrange="-0.38 3.4"/>
-    <position name="left_shoulder_yaw_joint" joint="left_shoulder_yaw_joint" kp="120" forcerange="-60 60" ctrlrange="-2.66 3.01"/>
-    <position name="left_elbow_joint" joint="left_elbow_joint" kp="100" forcerange="-50 50" ctrlrange="-0.95 3.18"/>
-    <position name="left_wrist_roll_joint" joint="left_wrist_roll_joint" kp="50" forcerange="-25 25" ctrlrange="-3.01 2.75"/>
-    <position name="left_wrist_pitch_joint" joint="left_wrist_pitch_joint" kp="50" forcerange="-25 25" ctrlrange="-0.4625 0.4625"/>
-    <position name="left_wrist_yaw_joint" joint="left_wrist_yaw_joint" kp="50" forcerange="-25 25" ctrlrange="-1.27 1.27"/>
+    <position name="left_shoulder_pitch_joint" joint="left_shoulder_pitch_joint" kp="60" forcerange="-35 35" ctrlrange="-3.14 1.57"/>
+    <position name="left_shoulder_roll_joint" joint="left_shoulder_roll_joint" kp="60" forcerange="-35 35" ctrlrange="-0.38 3.4"/>
+    <position name="left_shoulder_yaw_joint" joint="left_shoulder_yaw_joint" kp="25" forcerange="-12 12" ctrlrange="-2.66 3.01"/>
+    <position name="left_elbow_joint" joint="left_elbow_joint" kp="45" forcerange="-25 25" ctrlrange="-0.95 3.18"/>
+    <position name="left_wrist_roll_joint" joint="left_wrist_roll_joint" kp="25" forcerange="-12 12" ctrlrange="-3.01 2.75"/>
+    <position name="left_wrist_pitch_joint" joint="left_wrist_pitch_joint" kp="25" forcerange="-12 12" ctrlrange="-0.4625 0.4625"/>
+    <position name="left_wrist_yaw_joint" joint="left_wrist_yaw_joint" kp="25" forcerange="-12 12" ctrlrange="-1.27 1.27"/>
 
-    <position name="right_shoulder_pitch_joint" joint="right_shoulder_pitch_joint" kp="160" forcerange="-80 80" ctrlrange="-3.14 1.57"/>
-    <position name="right_shoulder_roll_joint" joint="right_shoulder_roll_joint" kp="160" forcerange="-80 80" ctrlrange="-3.4 0.38"/>
-    <position name="right_shoulder_yaw_joint" joint="right_shoulder_yaw_joint" kp="120" forcerange="-60 60" ctrlrange="-3.01 2.66"/>
-    <position name="right_elbow_joint" joint="right_elbow_joint" kp="100" forcerange="-50 50" ctrlrange="-0.95 3.18"/>
-    <position name="right_wrist_roll_joint" joint="right_wrist_roll_joint" kp="50" forcerange="-25 25" ctrlrange="-2.75 3.01"/>
-    <position name="right_wrist_pitch_joint" joint="right_wrist_pitch_joint" kp="50" forcerange="-25 25" ctrlrange="-0.4625 0.4625"/>
-    <position name="right_wrist_yaw_joint" joint="right_wrist_yaw_joint" kp="50" forcerange="-25 25" ctrlrange="-1.27 1.27"/>
+    <position name="right_shoulder_pitch_joint" joint="right_shoulder_pitch_joint" kp="60" forcerange="-35 35" ctrlrange="-3.14 1.57"/>
+    <position name="right_shoulder_roll_joint" joint="right_shoulder_roll_joint" kp="60" forcerange="-35 35" ctrlrange="-3.4 0.38"/>
+    <position name="right_shoulder_yaw_joint" joint="right_shoulder_yaw_joint" kp="25" forcerange="-12 12" ctrlrange="-3.01 2.66"/>
+    <position name="right_elbow_joint" joint="right_elbow_joint" kp="45" forcerange="-25 25" ctrlrange="-0.95 3.18"/>
+    <position name="right_wrist_roll_joint" joint="right_wrist_roll_joint" kp="25" forcerange="-12 12" ctrlrange="-2.75 3.01"/>
+    <position name="right_wrist_pitch_joint" joint="right_wrist_pitch_joint" kp="25" forcerange="-12 12" ctrlrange="-0.4625 0.4625"/>
+    <position name="right_wrist_yaw_joint" joint="right_wrist_yaw_joint" kp="25" forcerange="-12 12" ctrlrange="-1.27 1.27"/>
   </actuator>
 
 
