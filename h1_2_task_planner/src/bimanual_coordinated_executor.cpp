@@ -9,6 +9,7 @@
 #include <sys/stat.h>
 
 #include <rclcpp/rclcpp.hpp>
+#include <std_msgs/msg/string.hpp>
 #include <moveit/move_group_interface/move_group_interface.h>
 
 using namespace std::chrono_literals;
@@ -75,6 +76,8 @@ public:
 
     ensureDirectory(output_dir_);
 
+    event_pub_ = node_->create_publisher<std_msgs::msg::String>("/experiment_event", 10);
+
     csv_.open(output_dir_ + "/bimanual_joint_summary.csv", std::ios::out);
     csv_ << "condition,trial,success,planning_time_s,execution_time_s,"
          << "planned_duration_s,trajectory_points,joint_error_norm_rad\n";
@@ -89,6 +92,8 @@ public:
 
     RCLCPP_INFO(node_->get_logger(), "Ejecutor bimanual articular inicializado.");
     RCLCPP_INFO(node_->get_logger(), "Grupo: %s", planning_group_.c_str());
+    RCLCPP_INFO(node_->get_logger(), "Resultados en: %s", output_dir_.c_str());
+    RCLCPP_INFO(node_->get_logger(), "Publicando eventos en /experiment_event.");
   }
 
   void run()
@@ -120,6 +125,18 @@ public:
   }
 
 private:
+  void publishEvent(const std::string& event, const std::string& condition, int trial)
+  {
+    std_msgs::msg::String msg;
+    msg.data = event + "," + condition + "," + std::to_string(trial);
+    event_pub_->publish(msg);
+
+    RCLCPP_INFO(
+      node_->get_logger(),
+      "Evento publicado: %s",
+      msg.data.c_str());
+  }
+
   std::map<std::string, double> getCurrentJointMap()
   {
     std::map<std::string, double> joint_map;
@@ -238,12 +255,18 @@ private:
       }
 
       if (execute_) {
+        publishEvent("START", condition, trial);
+        rclcpp::sleep_for(100ms);
+
         const auto execution_start = node_->now();
         auto result = move_group_->execute(plan);
         execution_time_s = (node_->now() - execution_start).seconds();
 
         execution_success =
           (result == moveit::core::MoveItErrorCode::SUCCESS);
+
+        publishEvent("END", condition, trial);
+        rclcpp::sleep_for(100ms);
       } else {
         execution_success = true;
       }
@@ -255,6 +278,12 @@ private:
 
       joint_error_rad =
         jointErrorNorm(target_map, current_names, current_values);
+    } else {
+      RCLCPP_WARN(
+        node_->get_logger(),
+        "No se encontró plan válido para %s | repetición %d",
+        condition.c_str(),
+        trial);
     }
 
     const bool success = plan_success && execution_success;
@@ -307,6 +336,8 @@ private:
 
   rclcpp::Node::SharedPtr node_;
   std::shared_ptr<moveit::planning_interface::MoveGroupInterface> move_group_;
+
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr event_pub_;
 
   std::ofstream csv_;
 

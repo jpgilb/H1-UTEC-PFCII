@@ -59,7 +59,15 @@ install(TARGETS
 
 install(PROGRAMS
   scripts/joint_state_trial_logger.py
+  scripts/hand_pose_trial_logger.py
   scripts/plot_results.py
+  DESTINATION lib/${PROJECT_NAME}
+)
+
+install(PROGRAMS
+  scripts/joint_state_trial_logger.py
+  scripts/plot_results.py
+  scripts/hand_pose_trial_logger.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
