@@ -35,10 +35,18 @@ class MuJoCoFollowJointTrajectoryBridge(Node):
         self.declare_parameter("sim_rate_hz", 500.0)
         self.declare_parameter("joint_state_rate_hz", 50.0)
 
+        # Parámetros críticos para evitar CONTROL_FAILED de MoveIt
+        self.declare_parameter("min_trajectory_duration_sec", 3.0)
+        self.declare_parameter("goal_settle_timeout_sec", 3.0)
+        self.declare_parameter("goal_position_tolerance_rad", 0.10)
+
         self.model_path = self.get_parameter("model_path").value
         self.use_viewer = bool(self.get_parameter("use_viewer").value)
         self.sim_rate_hz = float(self.get_parameter("sim_rate_hz").value)
         self.joint_state_rate_hz = float(self.get_parameter("joint_state_rate_hz").value)
+        self.min_trajectory_duration_sec = float(self.get_parameter("min_trajectory_duration_sec").value)
+        self.goal_settle_timeout_sec = float(self.get_parameter("goal_settle_timeout_sec").value)
+        self.goal_position_tolerance_rad = float(self.get_parameter("goal_position_tolerance_rad").value)
 
         if not os.path.exists(self.model_path):
             raise FileNotFoundError(f"MJCF no encontrado: {self.model_path}")
@@ -97,31 +105,70 @@ class MuJoCoFollowJointTrajectoryBridge(Node):
         self.traj_start_time = None
         self.goal_done = threading.Event()
 
-        self.action_server = ActionServer(
-            self,
-            FollowJointTrajectory,
+        self.action_servers = []
+        for action_name in [
             "/both_arms_controller/follow_joint_trajectory",
-            execute_callback=self.execute_callback,
-            goal_callback=self.goal_callback,
-            cancel_callback=self.cancel_callback,
-        )
+            "/left_arm_controller/follow_joint_trajectory",
+            "/right_arm_controller/follow_joint_trajectory",
+        ]:
+            server = ActionServer(
+                self,
+                FollowJointTrajectory,
+                action_name,
+                execute_callback=self.execute_callback,
+                goal_callback=self.goal_callback,
+                cancel_callback=self.cancel_callback,
+            )
+            self.action_servers.append(server)
+            self.get_logger().info(f"Action server listo en {action_name}")
 
         self.sim_thread = threading.Thread(target=self._simulation_loop, daemon=True)
         self.sim_thread.start()
 
-        self.get_logger().info("Action server listo en /both_arms_controller/follow_joint_trajectory")
         self.get_logger().info("Publicando estados en /joint_states")
 
     @staticmethod
     def _duration_to_sec(duration_msg):
         return float(duration_msg.sec) + float(duration_msg.nanosec) * 1e-9
 
+    @staticmethod
+    def _write_sec_to_duration(duration_msg, seconds):
+        seconds = max(0.0, float(seconds))
+        sec = int(seconds)
+        nanosec = int((seconds - sec) * 1e9)
+        duration_msg.sec = sec
+        duration_msg.nanosec = nanosec
+
+    def _stretch_trajectory_timing(self, trajectory):
+        if not trajectory.points:
+            return trajectory
+
+        final_time = self._duration_to_sec(trajectory.points[-1].time_from_start)
+
+        if final_time >= self.min_trajectory_duration_sec:
+            return trajectory
+
+        if final_time <= 1e-6:
+            n = len(trajectory.points)
+            for i, point in enumerate(trajectory.points):
+                t = self.min_trajectory_duration_sec * (i / max(1, n - 1))
+                self._write_sec_to_duration(point.time_from_start, t)
+        else:
+            scale = self.min_trajectory_duration_sec / final_time
+            for point in trajectory.points:
+                t = self._duration_to_sec(point.time_from_start) * scale
+                self._write_sec_to_duration(point.time_from_start, t)
+
+        self.get_logger().warn(
+            f"Trayectoria corta estirada: {final_time:.3f}s -> "
+            f"{self.min_trajectory_duration_sec:.3f}s"
+        )
+        return trajectory
+
     def _build_actuator_map(self):
         actuator_by_joint = {}
-
         for actuator_id in range(self.model.nu):
             joint_id = int(self.model.actuator_trnid[actuator_id, 0])
-
             if joint_id < 0:
                 continue
 
@@ -138,7 +185,6 @@ class MuJoCoFollowJointTrajectoryBridge(Node):
 
     def _build_qpos_map(self):
         qpos_addr_by_joint = {}
-
         for joint_id in range(self.model.njnt):
             joint_name = mujoco.mj_id2name(
                 self.model,
@@ -146,16 +192,13 @@ class MuJoCoFollowJointTrajectoryBridge(Node):
                 joint_id,
             )
 
-            if not joint_name:
-                continue
-
-            qpos_addr_by_joint[joint_name] = int(self.model.jnt_qposadr[joint_id])
+            if joint_name:
+                qpos_addr_by_joint[joint_name] = int(self.model.jnt_qposadr[joint_id])
 
         return qpos_addr_by_joint
 
     def _build_qvel_map(self):
         qvel_addr_by_joint = {}
-
         for joint_id in range(self.model.njnt):
             joint_name = mujoco.mj_id2name(
                 self.model,
@@ -163,10 +206,8 @@ class MuJoCoFollowJointTrajectoryBridge(Node):
                 joint_id,
             )
 
-            if not joint_name:
-                continue
-
-            qvel_addr_by_joint[joint_name] = int(self.model.jnt_dofadr[joint_id])
+            if joint_name:
+                qvel_addr_by_joint[joint_name] = int(self.model.jnt_dofadr[joint_id])
 
         return qvel_addr_by_joint
 
@@ -204,14 +245,10 @@ class MuJoCoFollowJointTrajectoryBridge(Node):
 
     def _build_hold_command(self):
         command = {}
-
         for joint_name in self.actuator_by_joint:
-            if joint_name not in self.qpos_addr_by_joint:
-                continue
-
-            qpos_addr = self.qpos_addr_by_joint[joint_name]
-            command[joint_name] = float(self.data.qpos[qpos_addr])
-
+            if joint_name in self.qpos_addr_by_joint:
+                qpos_addr = self.qpos_addr_by_joint[joint_name]
+                command[joint_name] = float(self.data.qpos[qpos_addr])
         return command
 
     def _apply_command_to_mujoco(self):
@@ -231,16 +268,26 @@ class MuJoCoFollowJointTrajectoryBridge(Node):
     def _get_joint_position(self, joint_name):
         if joint_name not in self.qpos_addr_by_joint:
             return 0.0
-
-        qpos_addr = self.qpos_addr_by_joint[joint_name]
-        return float(self.data.qpos[qpos_addr])
+        return float(self.data.qpos[self.qpos_addr_by_joint[joint_name]])
 
     def _get_joint_velocity(self, joint_name):
         if joint_name not in self.qvel_addr_by_joint:
             return 0.0
+        return float(self.data.qvel[self.qvel_addr_by_joint[joint_name]])
 
-        qvel_addr = self.qvel_addr_by_joint[joint_name]
-        return float(self.data.qvel[qvel_addr])
+    def _max_goal_error(self, joint_names):
+        errors = []
+        for joint_name in joint_names:
+            desired = self.command.get(joint_name, None)
+            if desired is None:
+                continue
+            actual = self._get_joint_position(joint_name)
+            errors.append(abs(float(desired) - float(actual)))
+
+        if not errors:
+            return 0.0
+
+        return max(errors)
 
     def _publish_joint_states(self):
         msg = JointState()
@@ -299,7 +346,6 @@ class MuJoCoFollowJointTrajectoryBridge(Node):
             self.active_trajectory = None
             self.active_goal_joints = []
             self.goal_done.set()
-
             return True
 
         previous_point = points[0]
@@ -347,7 +393,6 @@ class MuJoCoFollowJointTrajectoryBridge(Node):
             with mujoco.viewer.launch_passive(self.model, self.data) as viewer:
                 while self.running and rclpy.ok() and viewer.is_running():
                     start_time = time.monotonic()
-
                     self._simulation_step()
 
                     now = time.monotonic()
@@ -358,12 +403,10 @@ class MuJoCoFollowJointTrajectoryBridge(Node):
                     viewer.sync()
 
                     elapsed = time.monotonic() - start_time
-                    sleep_time = max(0.0, sim_period - elapsed)
-                    time.sleep(sleep_time)
+                    time.sleep(max(0.0, sim_period - elapsed))
         else:
             while self.running and rclpy.ok():
                 start_time = time.monotonic()
-
                 self._simulation_step()
 
                 now = time.monotonic()
@@ -372,8 +415,7 @@ class MuJoCoFollowJointTrajectoryBridge(Node):
                     last_joint_state_time = now
 
                 elapsed = time.monotonic() - start_time
-                sleep_time = max(0.0, sim_period - elapsed)
-                time.sleep(sleep_time)
+                time.sleep(max(0.0, sim_period - elapsed))
 
     def goal_callback(self, goal_request):
         trajectory = goal_request.trajectory
@@ -421,6 +463,7 @@ class MuJoCoFollowJointTrajectoryBridge(Node):
     def execute_callback(self, goal_handle):
         trajectory = deepcopy(goal_handle.request.trajectory)
         trajectory = self._insert_initial_point_if_needed(trajectory)
+        trajectory = self._stretch_trajectory_timing(trajectory)
 
         result = FollowJointTrajectory.Result()
         self.goal_done.clear()
@@ -466,12 +509,33 @@ class MuJoCoFollowJointTrajectoryBridge(Node):
             goal_handle.publish_feedback(feedback)
             time.sleep(0.05)
 
+        settle_start = time.monotonic()
+        final_error = float("inf")
+
+        while rclpy.ok():
+            with self.lock:
+                final_error = self._max_goal_error(trajectory.joint_names)
+
+            if final_error <= self.goal_position_tolerance_rad:
+                break
+
+            if time.monotonic() - settle_start > self.goal_settle_timeout_sec:
+                self.get_logger().warn(
+                    f"Timeout de asentamiento. Error final máximo: {final_error:.4f} rad"
+                )
+                break
+
+            time.sleep(0.05)
+
         goal_handle.succeed()
 
         result.error_code = FollowJointTrajectory.Result.SUCCESSFUL
         result.error_string = ""
 
-        self.get_logger().info("Trayectoria finalizada correctamente")
+        self.get_logger().info(
+            f"Trayectoria finalizada correctamente. Error final máximo: {final_error:.4f} rad"
+        )
+
         return result
 
     def destroy_node(self):
@@ -492,7 +556,8 @@ def main():
         pass
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == "__main__":
