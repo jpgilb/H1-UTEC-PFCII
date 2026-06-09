@@ -7,7 +7,7 @@ moveit_setup_assistant_config:
   package_settings:
     author_name: JP Gil
     author_email: jose.gil@utec.edu.pe
-    generated_timestamp: 1776126259
+    generated_timestamp: 1775599242
   control_xacro:
     command:
       - position
