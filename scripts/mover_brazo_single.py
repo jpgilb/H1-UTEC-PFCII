@@ -32,18 +32,28 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 import rclpy
 import tf2_ros
+from tf2_ros import TransformException
 from builtin_interfaces.msg import Duration
 from control_msgs.action import FollowJointTrajectory
-from geometry_msgs.msg import Pose
-from moveit_msgs.action import MoveGroup
+from geometry_msgs.msg import Pose, PoseStamped
+from moveit_msgs.action import MoveGroup, ExecuteTrajectory
 from moveit_msgs.msg import (
     AttachedCollisionObject,
     CollisionObject,
     Constraints,
     JointConstraint,
     MotionPlanRequest,
+    PlanningScene,
+    PlanningSceneComponents,
+    RobotState,
 )
-from moveit_msgs.srv import GetPositionIK
+from moveit_msgs.srv import (
+    GetPositionIK,
+    ApplyPlanningScene,
+    GetPlanningScene,
+    GetStateValidity,
+    GetCartesianPath,
+)
 from rclpy.action import ActionClient
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
@@ -89,9 +99,9 @@ class SingleArmFaceApproachGraspNode(Node):
         # ======================================================================
         self.declare_parameter('hover_height', 0.120)              # Altura elevada sobre el objeto para preagarre [m]
         self.declare_parameter('approach_distance', 0.080)         # Distancia de aproximación desde atrás en el eje -X local [m]
-        self.declare_parameter('surface_clearance', 0.008)         # Distancia mínima entre la palma y la cara del objeto [m]
+        self.declare_parameter('surface_clearance', 0.012)         # Distancia mínima entre la palma y la cara del objeto [m]
         self.declare_parameter('lift_distance', 0.150)             # Altura de elevación vertical tras el agarre [m]
-        self.declare_parameter('dz_offset', -0.020)                # Ajuste vertical del TCP (baja la mano para centrar dedos) [m]
+        self.declare_parameter('dz_offset', 0.020)                # Ajuste vertical del TCP (baja la mano para centrar dedos) [m]
 
         # ======================================================================
         # 4. PARÁMETROS DE PLACE (COLOCACIÓN)
@@ -149,7 +159,22 @@ class SingleArmFaceApproachGraspNode(Node):
         # 8. PARÁMETROS DE RETIRADA Y MOVIMIENTOS CARTESIANOS
         # ======================================================================
         self.declare_parameter('use_split_place_retreat', False)
-        self.declare_parameter('use_cartesian_local_motions', False)
+        self.declare_parameter('use_cartesian_local_motions', True)
+        self.declare_parameter('enable_state_validity_diagnostics', True)
+        self.declare_parameter('abort_on_invalid_state_before_motion', True)
+        self.declare_parameter('min_cartesian_fraction', 0.9)
+        self.declare_parameter('cartesian_max_step', 0.005)
+        self.declare_parameter('cartesian_jump_threshold', 1.5)
+        self.declare_parameter('phase4_start_sync_enabled', True)
+        self.declare_parameter('phase4_tcp_position_tolerance', 0.015)
+        self.declare_parameter('phase4_tcp_orientation_tolerance_deg', 5.0)
+        self.declare_parameter('phase4_start_sync_timeout', 1.0)
+        self.declare_parameter('phase4_start_sync_poll_dt', 0.05)
+        self.declare_parameter('cartesian_joint_jump_guard_enabled', True)
+        self.declare_parameter('cartesian_max_step_joint_delta', 0.35)
+        self.declare_parameter('cartesian_max_total_joint_delta', 2.0)
+        self.declare_parameter('cartesian_phase4_max_total_joint_delta', 1.5)
+        self.declare_parameter('cartesian_log_joint_deltas', True)
 
         # --------------------------
         # CARGAR VALORES DE PARÁMETROS
@@ -208,6 +233,21 @@ class SingleArmFaceApproachGraspNode(Node):
         self.use_inner_collision_object = bool(self.get_parameter('use_inner_collision_object').value)
         self.use_split_place_retreat = bool(self.get_parameter('use_split_place_retreat').value)
         self.use_cartesian_local_motions = bool(self.get_parameter('use_cartesian_local_motions').value)
+        self.enable_state_validity_diagnostics = bool(self.get_parameter('enable_state_validity_diagnostics').value)
+        self.abort_on_invalid_state_before_motion = bool(self.get_parameter('abort_on_invalid_state_before_motion').value)
+        self.min_cartesian_fraction = float(self.get_parameter('min_cartesian_fraction').value)
+        self.cartesian_max_step = float(self.get_parameter('cartesian_max_step').value)
+        self.cartesian_jump_threshold = float(self.get_parameter('cartesian_jump_threshold').value)
+        self.phase4_start_sync_enabled = bool(self.get_parameter('phase4_start_sync_enabled').value)
+        self.phase4_tcp_position_tolerance = float(self.get_parameter('phase4_tcp_position_tolerance').value)
+        self.phase4_tcp_orientation_tolerance_deg = float(self.get_parameter('phase4_tcp_orientation_tolerance_deg').value)
+        self.phase4_start_sync_timeout = float(self.get_parameter('phase4_start_sync_timeout').value)
+        self.phase4_start_sync_poll_dt = float(self.get_parameter('phase4_start_sync_poll_dt').value)
+        self.cartesian_joint_jump_guard_enabled = bool(self.get_parameter('cartesian_joint_jump_guard_enabled').value)
+        self.cartesian_max_step_joint_delta = float(self.get_parameter('cartesian_max_step_joint_delta').value)
+        self.cartesian_max_total_joint_delta = float(self.get_parameter('cartesian_max_total_joint_delta').value)
+        self.cartesian_phase4_max_total_joint_delta = float(self.get_parameter('cartesian_phase4_max_total_joint_delta').value)
+        self.cartesian_log_joint_deltas = bool(self.get_parameter('cartesian_log_joint_deltas').value)
 
         if self.arm_side not in ('left', 'right'):
             raise ValueError('arm_side debe ser "left" o "right"')
@@ -267,6 +307,24 @@ class SingleArmFaceApproachGraspNode(Node):
         self.ik_client = self.create_client(
             GetPositionIK, 'compute_ik', callback_group=self.cb_group
         )
+        self.apply_planning_scene_client = self.create_client(
+            ApplyPlanningScene, 'apply_planning_scene', callback_group=self.cb_group
+        )
+        self.get_planning_scene_client = self.create_client(
+            GetPlanningScene, 'get_planning_scene', callback_group=self.cb_group
+        )
+        self.state_validity_client = self.create_client(
+            GetStateValidity, 'check_state_validity', callback_group=self.cb_group
+        )
+        self.cartesian_path_client = self.create_client(
+            GetCartesianPath, 'compute_cartesian_path', callback_group=self.cb_group
+        )
+        self.execute_trajectory_client = ActionClient(
+            self,
+            ExecuteTrajectory,
+            'execute_trajectory',
+            callback_group=self.cb_group
+        )
         self.hand_action_client = ActionClient(
             self,
             FollowJointTrajectory,
@@ -284,6 +342,20 @@ class SingleArmFaceApproachGraspNode(Node):
 
         while not self.ik_client.wait_for_service(timeout_sec=1.0):
             self.get_logger().info('Esperando servicio /compute_ik...')
+        while not self.apply_planning_scene_client.wait_for_service(timeout_sec=1.0):
+            self.get_logger().info('Esperando servicio /apply_planning_scene...')
+        while not self.get_planning_scene_client.wait_for_service(timeout_sec=1.0):
+            self.get_logger().info('Esperando servicio /get_planning_scene...')
+
+        if self.enable_state_validity_diagnostics:
+            while not self.state_validity_client.wait_for_service(timeout_sec=1.0):
+                self.get_logger().info('Esperando servicio /check_state_validity...')
+
+        if self.use_cartesian_local_motions:
+            while not self.cartesian_path_client.wait_for_service(timeout_sec=1.0):
+                self.get_logger().info('Esperando servicio /compute_cartesian_path...')
+            while not self.execute_trajectory_client.wait_for_server(timeout_sec=1.0):
+                self.get_logger().info('Esperando servidor de acción /execute_trajectory...')
 
         self.get_logger().info(
             f'Nodo listo. Brazo={self.cfg.arm_group}, mano={self.cfg.hand_group}, '
@@ -653,10 +725,657 @@ class SingleArmFaceApproachGraspNode(Node):
         aco.object = obj
         self.attach_pub.publish(aco)
 
+    def construir_robot_state_actual(self) -> Optional[RobotState]:
+        if self.last_joint_state is None:
+            if self.use_cartesian_local_motions:
+                self.get_logger().error("Abortando: last_joint_state es None pero use_cartesian_local_motions está activo.")
+                rclpy.shutdown()
+            return None
+        rs = RobotState()
+        rs.joint_state = self.last_joint_state
+        return rs
+
+    def verificar_estado_actual(self, label: str, group_name: Optional[str] = None) -> bool:
+        robot_state = self.construir_robot_state_actual()
+        if robot_state is None:
+            self.get_logger().warn(f"[{label}] No hay joint state disponible; omitiendo verificación de estado actual.")
+            return True
+            
+        req = GetStateValidity.Request()
+        req.robot_state = robot_state
+        req.group_name = group_name if group_name is not None else self.cfg.arm_group
+        
+        try:
+            response = self.state_validity_client.call(req)
+            if response is None:
+                self.get_logger().error(f"[{label}] Respuesta del servicio check_state_validity es None.")
+                return False
+                
+            self.get_logger().info(f"[Estado Actual - {label}] Validez: {response.valid}")
+            if not response.valid and response.contacts:
+                self.get_logger().warn(f"[Estado Actual - {label}] Contactos de colisión detectados ({len(response.contacts)}):")
+                for c in response.contacts:
+                    self.get_logger().warn(
+                        f"  - Contacto entre '{c.contact_body_1}' y '{c.contact_body_2}'."
+                    )
+            return response.valid
+        except Exception as e:
+            self.get_logger().error(f"[{label}] Excepción al verificar estado actual: {str(e)}")
+            return False
+
+    def verificar_estado_ik(self, ik_response, label: str) -> bool:
+        if ik_response is None or ik_response.solution is None:
+            self.get_logger().error(f"[{label}] ik_response o solution es None.")
+            return False
+            
+        req = GetStateValidity.Request()
+        req.robot_state = ik_response.solution
+        req.group_name = self.cfg.arm_group
+        
+        try:
+            response = self.state_validity_client.call(req)
+            if response is None:
+                self.get_logger().error(f"[{label}] Respuesta de check_state_validity para IK es None.")
+                return False
+                
+            self.get_logger().info(f"[Estado IK - {label}] Validez del estado objetivo IK: {response.valid}")
+            if not response.valid and response.contacts:
+                self.get_logger().warn(f"[Estado IK - {label}] Contactos de colisión detectados en IK ({len(response.contacts)}):")
+                for c in response.contacts:
+                    self.get_logger().warn(
+                        f"  - Contacto en IK entre '{c.contact_body_1}' y '{c.contact_body_2}'."
+                    )
+            return response.valid
+        except Exception as e:
+            self.get_logger().error(f"[{label}] Excepción al verificar estado IK: {str(e)}")
+            return False
+
+    def es_contacto_liberacion_permitido(self, contact_body_1: str, contact_body_2: str) -> bool:
+        if contact_body_1 in ("objeto_manipulado", "objeto_interno_colision"):
+            other_body = contact_body_2
+        elif contact_body_2 in ("objeto_manipulado", "objeto_interno_colision"):
+            other_body = contact_body_1
+        else:
+            return False
+            
+        p = self.cfg.link_prefix
+        allowed_links = set(self.touch_links_dedos())
+        allowed_links.add(self.cfg.ee_link)
+        allowed_links.add(f"{p}hand_base_link")
+        
+        return other_body in allowed_links
+
+    def verificar_estado_actual_permitiendo_contactos_liberacion(self, label: str) -> bool:
+        robot_state = self.construir_robot_state_actual()
+        if robot_state is None:
+            self.get_logger().warn(f"[{label}] No hay joint state disponible; omitiendo verificación de estado actual.")
+            return True
+            
+        req = GetStateValidity.Request()
+        req.robot_state = robot_state
+        req.group_name = self.cfg.arm_group
+        
+        try:
+            response = self.state_validity_client.call(req)
+            if response is None:
+                self.get_logger().error(f"[{label}] Respuesta del servicio check_state_validity es None.")
+                return False
+                
+            if response.valid:
+                self.get_logger().info(f"[Estado Actual - {label}] Validez: True")
+                return True
+                
+            # Estado es inválido. Si no hay contactos reportados, retornar False
+            if not response.contacts:
+                self.get_logger().error(f"[Estado Actual - {label}] Estado inválido sin contactos reportados. Abortando...")
+                return False
+                
+            # Revisar todos los contactos
+            all_permitted = True
+            for c in response.contacts:
+                if not self.es_contacto_liberacion_permitido(c.contact_body_1, c.contact_body_2):
+                    all_permitted = False
+                    self.get_logger().error(
+                        f"[Estado Actual - {label}] Contacto NO permitido detectado: "
+                        f"'{c.contact_body_1}' con '{c.contact_body_2}'."
+                    )
+            
+            if all_permitted:
+                self.get_logger().warn(
+                    f"[Estado Actual - {label}] Estado inválido solo por contactos permitidos de liberación mano-objeto. Se permite retirada cartesiana."
+                )
+                return True
+            else:
+                self.get_logger().error(f"[Estado Actual - {label}] Existen contactos de colisión no permitidos. Abortando...")
+                return False
+                
+        except Exception as e:
+            self.get_logger().error(f"[{label}] Excepción al verificar estado actual con contactos permitidos: {str(e)}")
+            return False
+
+    def ejecutar_movimiento_cartesiano_local(
+        self,
+        target_pos: np.ndarray,
+        target_quat: np.ndarray,
+        phase: int,
+        label: str,
+        on_success: str,
+        allow_release_contacts: bool = False
+    ) -> None:
+        self.get_logger().info(f'Planificando movimiento cartesiano local para fase {phase}: {label}')
+        
+        if self.last_joint_state is None:
+            self.get_logger().error("Abortando: last_joint_state es None al intentar movimiento cartesiano.")
+            rclpy.shutdown()
+            return
+            
+        if self.enable_state_validity_diagnostics:
+            if allow_release_contacts:
+                valid_curr = self.verificar_estado_actual_permitiendo_contactos_liberacion(f"antes de movimiento cartesiano local: {label}")
+            else:
+                valid_curr = self.verificar_estado_actual(f"antes de movimiento cartesiano local: {label}")
+                
+            if self.abort_on_invalid_state_before_motion and not valid_curr:
+                self.get_logger().error(f"Abortando: estado actual inválido antes de {label}.")
+                rclpy.shutdown()
+                return
+
+        # Obtener pose actual del TCP y alinear quaternion para evitar wrist flips
+        pose_actual = self.obtener_pose_tcp_actual()
+        target_quat_aligned = np.asarray(target_quat, dtype=float)
+        
+        q_target_orig = target_quat_aligned.copy()
+        q_actual_tcp = None
+        dot_before = 0.0
+        dot_after = 0.0
+
+        if pose_actual is not None:
+            q_actual_tcp = np.array([
+                pose_actual.orientation.x,
+                pose_actual.orientation.y,
+                pose_actual.orientation.z,
+                pose_actual.orientation.w
+            ], dtype=float)
+            q_actual_tcp = self.normalizar_quat(q_actual_tcp)
+            dot_before = np.dot(self.normalizar_quat(target_quat_aligned), q_actual_tcp)
+            target_quat_aligned = self.alinear_signo_quat_con_referencia(target_quat_aligned, q_actual_tcp)
+            dot_after = np.dot(target_quat_aligned, q_actual_tcp)
+        else:
+            self.get_logger().warning("No se pudo obtener la pose actual del TCP. Se usará el quaternion objetivo original.")
+
+        # Construir waypoint Pose
+        target_pose = Pose()
+        target_pose.position.x = float(target_pos[0])
+        target_pose.position.y = float(target_pos[1])
+        target_pose.position.z = float(target_pos[2])
+        target_pose.orientation.x = float(target_quat_aligned[0])
+        target_pose.orientation.y = float(target_quat_aligned[1])
+        target_pose.orientation.z = float(target_quat_aligned[2])
+        target_pose.orientation.w = float(target_quat_aligned[3])
+
+        req = GetCartesianPath.Request()
+        req.header.frame_id = self.base_frame
+        req.header.stamp = self.get_clock().now().to_msg()
+        
+        start_state = self.construir_robot_state_actual()
+        if start_state is not None:
+            req.start_state = start_state
+            
+        req.group_name = self.cfg.arm_group
+        req.link_name = self.cfg.ee_link
+        req.waypoints = [target_pose]
+        req.max_step = self.cartesian_max_step
+        req.jump_threshold = self.cartesian_jump_threshold
+        req.avoid_collisions = True
+
+        try:
+            response = self.cartesian_path_client.call(req)
+            if response is None:
+                self.get_logger().error(f'[{label}] compute_cartesian_path retornó respuesta None.')
+                rclpy.shutdown()
+                return
+                
+            fraction = response.fraction
+            err_code = response.error_code.val
+
+            num_points = 0
+            first_pos = []
+            last_pos = []
+            if (response.solution is not None and 
+                response.solution.joint_trajectory is not None and 
+                response.solution.joint_trajectory.points):
+                points = response.solution.joint_trajectory.points
+                num_points = len(points)
+                if num_points > 0:
+                    first_pos = [round(v, 4) for v in points[0].positions]
+                    last_pos = [round(v, 4) for v in points[-1].positions]
+
+            self.get_logger().info(
+                f'[{label}] Fracción: {fraction:.4f} | Código Error: {err_code} | Objetivo: {target_pos.tolist()}\n'
+                f'  Fase: {phase} | Lado: {self.cfg.side} | Etapa: {self.transfer_stage}\n'
+                f'  cartesian_max_step: {self.cartesian_max_step} | cartesian_jump_threshold: {self.cartesian_jump_threshold} | min_cartesian_fraction: {self.min_cartesian_fraction:.4f}\n'
+                f'  Puntos en trayectoria: {num_points}\n'
+                f'  Primera posición articular: {first_pos}\n'
+                f'  Última posición articular: {last_pos}'
+            )
+            
+            if fraction < self.min_cartesian_fraction:
+                self.get_logger().error(
+                    f'[{label}] Fracción cartesiana planificada ({fraction:.4f}) menor que la mínima requerida ({self.min_cartesian_fraction:.4f}). Abortando...'
+                )
+                rclpy.shutdown()
+                return
+                
+            if err_code != 1:  # MoveItErrorCodes.SUCCESS = 1
+                self.get_logger().error(f'[{label}] Fallo en planificación de trayectoria cartesiana. Código: {err_code}. Abortando...')
+                rclpy.shutdown()
+                return
+
+            # Calcular max joint delta total y el joint correspondiente
+            max_delta_total = 0.0
+            max_delta_joint_name = "N/A"
+            if (response.solution is not None and 
+                response.solution.joint_trajectory is not None and 
+                response.solution.joint_trajectory.points):
+                joint_names = response.solution.joint_trajectory.joint_names
+                points = response.solution.joint_trajectory.points
+                if len(points) > 0:
+                    for j, j_name in enumerate(joint_names):
+                        d_tot = abs(points[-1].positions[j] - points[0].positions[j])
+                        if d_tot > max_delta_total:
+                            max_delta_total = d_tot
+                            max_delta_joint_name = j_name
+
+            if phase == 4:
+                # distancia cartesiana objetivo
+                tcp_actual_pos = None
+                if pose_actual is not None:
+                    tcp_actual_pos, _ = self.pose_to_np(pose_actual)
+                dist_obj = np.linalg.norm(target_pos - tcp_actual_pos) if tcp_actual_pos is not None else np.linalg.norm(target_pos - self.tcp_ready)
+                q_act_list = q_actual_tcp.tolist() if q_actual_tcp is not None else "N/A"
+                self.get_logger().info(
+                    f"[DIAGNÓSTICO FASE 4 - EJECUCIÓN CARTESIANA]\n"
+                    f"  Distancia cartesiana objetivo: {dist_obj:.4f} m\n"
+                    f"  Quaternion actual TCP: {q_act_list}\n"
+                    f"  Quaternion objetivo antes de alineación: {q_target_orig.tolist()}\n"
+                    f"  Quaternion objetivo después de alineación: {target_quat_aligned.tolist()}\n"
+                    f"  Dot product antes de alineación: {dot_before:.4f}\n"
+                    f"  Dot product después de alineación: {dot_after:.4f}\n"
+                    f"  Delta articular total máximo: {max_delta_total:.4f} rad\n"
+                    f"  Joint responsable del mayor delta: {max_delta_joint_name}"
+                )
+
+            if self.cartesian_joint_jump_guard_enabled:
+                if not self.validar_suavidad_trayectoria_cartesiana(response.solution, phase, label):
+                    # validar_suavidad_trayectoria_cartesiana ya imprimió el log de error
+                    rclpy.shutdown()
+                    return
+                
+            # Guardar contexto
+            self.current_phase = phase
+            self.cartesian_motion_context = on_success
+            self.cartesian_motion_label = label
+            
+            # Ejecutar trayectoria con ExecuteTrajectory action
+            if not self.execute_trajectory_client.wait_for_server(timeout_sec=5.0):
+                self.get_logger().error('Servidor de acción /execute_trajectory no disponible.')
+                rclpy.shutdown()
+                return
+                
+            goal_msg = ExecuteTrajectory.Goal()
+            goal_msg.trajectory = response.solution
+            
+            future = self.execute_trajectory_client.send_goal_async(goal_msg)
+            future.add_done_callback(self.cartesian_execute_goal_response_callback)
+            
+        except Exception as e:
+            self.get_logger().error(f'[{label}] Excepción en compute_cartesian_path: {str(e)}')
+            rclpy.shutdown()
+
+    def cartesian_execute_goal_response_callback(self, future) -> None:
+        goal_handle = future.result()
+        if not goal_handle.accepted:
+            self.get_logger().error(f'Ejecución de trayectoria cartesiana para {self.cartesian_motion_label} rechazada.')
+            rclpy.shutdown()
+            return
+            
+        self.get_logger().info(f'Ejecución cartesiana para {self.cartesian_motion_label} aceptada. Monitoreando...')
+        result_future = goal_handle.get_result_async()
+        result_future.add_done_callback(self.cartesian_execute_result_callback)
+
+    def cartesian_execute_result_callback(self, future) -> None:
+        result = future.result().result
+        if result.error_code.val == 1:  # SUCCESS = 1
+            self.get_logger().info(f'Ejecución cartesiana de {self.cartesian_motion_label} (Fase {self.current_phase}) completada con éxito.')
+            
+            if self.cartesian_motion_context == "phase4_done":
+                self.ejecutar_siguiente_fase()
+            elif self.cartesian_motion_context == "phase9_done":
+                self.ejecutar_siguiente_fase()
+            elif self.cartesian_motion_context == "phase12_retreat_done":
+                self.retreat_done = True
+                self.ejecutar_fase_12_retirada_segura()
+            else:
+                self.get_logger().error(f'Contexto cartesiano desconocido: {self.cartesian_motion_context}. Abortando...')
+                rclpy.shutdown()
+        else:
+            self.get_logger().error(
+                f'Error en la ejecución de la trayectoria cartesiana para {self.cartesian_motion_label} (Fase {self.current_phase}). Código: {result.error_code.val}. Abortando...'
+            )
+            rclpy.shutdown()
+
+    def aplicar_planning_scene(
+        self,
+        collision_objects: Optional[List[CollisionObject]] = None,
+        attached_collision_objects: Optional[List[AttachedCollisionObject]] = None,
+        is_diff: bool = True,
+        label: str = ''
+    ) -> bool:
+        scene = PlanningScene()
+        scene.is_diff = is_diff
+        
+        if collision_objects is not None:
+            scene.world.collision_objects = collision_objects
+            
+        if attached_collision_objects is not None:
+            scene.robot_state.attached_collision_objects = attached_collision_objects
+            scene.robot_state.is_diff = True
+            
+        req = ApplyPlanningScene.Request()
+        req.scene = scene
+        
+        try:
+            response = self.apply_planning_scene_client.call(req)
+            if response is not None and response.success:
+                self.get_logger().info(f'[PlanningScene] {label} aplicada con éxito.')
+                return True
+            else:
+                self.get_logger().error(f'[PlanningScene] {label} falló al aplicarse.')
+                return False
+        except Exception as e:
+            self.get_logger().error(f'[PlanningScene] Excepción en {label}: {str(e)}')
+            return False
+
+    def obtener_planning_scene(self) -> Optional[PlanningScene]:
+        req = GetPlanningScene.Request()
+        req.components.components = (
+            PlanningSceneComponents.WORLD_OBJECT_NAMES |
+            PlanningSceneComponents.WORLD_OBJECT_GEOMETRY |
+            PlanningSceneComponents.ROBOT_STATE_ATTACHED_OBJECTS
+        )
+        try:
+            response = self.get_planning_scene_client.call(req)
+            if response is not None:
+                return response.scene
+            else:
+                self.get_logger().error('Fallo al obtener planning scene (response is None).')
+                return None
+        except Exception as e:
+            self.get_logger().error(f'Excepción al obtener planning scene: {str(e)}')
+            return None
+
+    def verificar_objeto_en_mundo_no_attached(self, obj_id: str = 'objeto_manipulado', timeout_sec: float = 2.0) -> bool:
+        start_time = time.time()
+        while (time.time() - start_time) < timeout_sec:
+            scene = self.obtener_planning_scene()
+            if scene is not None:
+                in_world = any(co.id == obj_id for co in scene.world.collision_objects)
+                is_attached = any(aco.object.id == obj_id for aco in scene.robot_state.attached_collision_objects)
+                if in_world and not is_attached:
+                    self.get_logger().info(f"{obj_id} presente en WORLD y no attached")
+                    return True
+            time.sleep(0.1)
+            
+        # Log error showing all ids on failure
+        scene = self.obtener_planning_scene()
+        world_ids = []
+        attached_ids = []
+        if scene is not None:
+            world_ids = [co.id for co in scene.world.collision_objects]
+            attached_ids = [aco.object.id for aco in scene.robot_state.attached_collision_objects]
+        self.get_logger().error(
+            f'Fallo al verificar {obj_id} en WORLD y no ATTACHED. '
+            f'Objetos en Mundo: {world_ids}, Objetos Adjuntos: {attached_ids}'
+        )
+        return False
+
+    def verificar_objeto_attached(self, obj_id: str = 'objeto_manipulado', timeout_sec: float = 2.0) -> bool:
+        start_time = time.time()
+        while (time.time() - start_time) < timeout_sec:
+            scene = self.obtener_planning_scene()
+            if scene is not None:
+                is_attached = any(aco.object.id == obj_id for aco in scene.robot_state.attached_collision_objects)
+                if is_attached:
+                    self.get_logger().info(f"{obj_id} presente en ATTACHED")
+                    return True
+            time.sleep(0.1)
+            
+        # Log error showing all ids on failure
+        scene = self.obtener_planning_scene()
+        world_ids = []
+        attached_ids = []
+        if scene is not None:
+            world_ids = [co.id for co in scene.world.collision_objects]
+            attached_ids = [aco.object.id for aco in scene.robot_state.attached_collision_objects]
+        self.get_logger().error(
+            f'Fallo al verificar {obj_id} ATTACHED. '
+            f'Objetos en Mundo: {world_ids}, Objetos Adjuntos: {attached_ids}'
+        )
+        return False
+
+    def normalizar_quat(self, q: np.ndarray) -> np.ndarray:
+        q_arr = np.asarray(q, dtype=float)
+        norm = np.linalg.norm(q_arr)
+        if norm < 1e-9:
+            return np.array([0.0, 0.0, 0.0, 1.0], dtype=float)
+        return q_arr / norm
+
+    def alinear_signo_quat_con_referencia(self, q_target: np.ndarray, q_ref: np.ndarray) -> np.ndarray:
+        q_t = self.normalizar_quat(q_target)
+        q_r = self.normalizar_quat(q_ref)
+        dot = np.dot(q_t, q_r)
+        if dot < 0.0:
+            self.get_logger().info("Quaternion objetivo invertido para evitar interpolación antípoda.")
+            return -q_t
+        return q_t
+
+    def validar_suavidad_trayectoria_cartesiana(self, trajectory, phase: int, label: str) -> bool:
+        if (trajectory is None or 
+            trajectory.joint_trajectory is None or 
+            not trajectory.joint_trajectory.points):
+            self.get_logger().error(f"[{label}] Trayectoria cartesiana no contiene puntos.")
+            return False
+
+        joint_names = trajectory.joint_trajectory.joint_names
+        points = trajectory.joint_trajectory.points
+        num_joints = len(joint_names)
+        
+        joint_deltas_total = []
+        joint_deltas_step_max = []
+
+        for j in range(num_joints):
+            pos_inicial = points[0].positions[j]
+            pos_final = points[-1].positions[j]
+            delta_total = abs(pos_final - pos_inicial)
+            joint_deltas_total.append(delta_total)
+
+            max_step = 0.0
+            for p in range(1, len(points)):
+                diff = abs(points[p].positions[j] - points[p-1].positions[j])
+                if diff > max_step:
+                    max_step = diff
+            joint_deltas_step_max.append(max_step)
+
+        if self.cartesian_log_joint_deltas:
+            log_lines = [f"[{label}] Resumen de suavidad articular (Fase {phase}):"]
+            log_lines.append(f"  {'Joint Name':<35} | {'Delta Total (rad)':<18} | {'Max Step Delta (rad)':<20}")
+            log_lines.append("  " + "-" * 80)
+            for j in range(num_joints):
+                log_lines.append(
+                    f"  {joint_names[j]:<35} | {joint_deltas_total[j]:.4f}               | {joint_deltas_step_max[j]:.4f}"
+                )
+            self.get_logger().info("\n".join(log_lines))
+
+        limite_total = self.cartesian_phase4_max_total_joint_delta if phase == 4 else self.cartesian_max_total_joint_delta
+
+        for j in range(num_joints):
+            if joint_deltas_step_max[j] > self.cartesian_max_step_joint_delta:
+                self.get_logger().error(
+                    f"[{label}] Rechazado: Joint {joint_names[j]} excede max_step_joint_delta "
+                    f"({joint_deltas_step_max[j]:.4f} > {self.cartesian_max_step_joint_delta:.4f})."
+                )
+                self.get_logger().error("Trayectoria cartesiana rechazada por salto/reconfiguración articular excesiva.")
+                return False
+
+            if joint_deltas_total[j] > limite_total:
+                self.get_logger().error(
+                    f"[{label}] Rechazado: Joint {joint_names[j]} excede limite_total "
+                    f"({joint_deltas_total[j]:.4f} > {limite_total:.4f})."
+                )
+                self.get_logger().error("Trayectoria cartesiana rechazada por salto/reconfiguración articular excesiva.")
+                return False
+
+        return True
+
+    def obtener_pose_tcp_actual(self) -> Optional[Pose]:
+        try:
+            transform = self.tf_buffer.lookup_transform(
+                self.base_frame,
+                self.cfg.ee_link,
+                rclpy.time.Time()
+            )
+            pose = Pose()
+            pose.position.x = transform.transform.translation.x
+            pose.position.y = transform.transform.translation.y
+            pose.position.z = transform.transform.translation.z
+            pose.orientation.x = transform.transform.rotation.x
+            pose.orientation.y = transform.transform.rotation.y
+            pose.orientation.z = transform.transform.rotation.z
+            pose.orientation.w = transform.transform.rotation.w
+            return pose
+        except TransformException as e:
+            self.get_logger().warning(
+                f"Error al consultar TF desde {self.base_frame} a {self.cfg.ee_link}: {e}"
+            )
+            return None
+
+    def pose_to_np(self, pose: Pose) -> Tuple[np.ndarray, np.ndarray]:
+        pos = np.array([pose.position.x, pose.position.y, pose.position.z], dtype=float)
+        ori = np.array([pose.orientation.x, pose.orientation.y, pose.orientation.z, pose.orientation.w], dtype=float)
+        return pos, ori
+
+    def distancia_angular_quat_deg(self, q1: np.ndarray, q2: np.ndarray) -> float:
+        norm1 = np.linalg.norm(q1)
+        norm2 = np.linalg.norm(q2)
+        q1_norm = q1 / norm1 if norm1 > 1e-9 else q1
+        q2_norm = q2 / norm2 if norm2 > 1e-9 else q2
+        dot = abs(np.dot(q1_norm, q2_norm))
+        dot = np.clip(dot, -1.0, 1.0)
+        angle = 2.0 * math.acos(dot)
+        return math.degrees(angle)
+
+    def esperar_tcp_cerca_de_ready_para_fase4(self) -> bool:
+        if not self.phase4_start_sync_enabled:
+            self.get_logger().info("[SYNC FASE 4] Sincronización deshabilitada.")
+            return True
+
+        start_time = time.time()
+        logged_once = False
+
+        pos_error = 9999.0
+        ori_error_deg = 9999.0
+        last_tcp_pos = np.zeros(3)
+        last_tcp_quat = np.array([0.0, 0.0, 0.0, 1.0])
+
+        while (time.time() - start_time) < self.phase4_start_sync_timeout:
+            pose_actual = self.obtener_pose_tcp_actual()
+            if pose_actual is not None:
+                tcp_actual_pos, tcp_actual_quat = self.pose_to_np(pose_actual)
+                last_tcp_pos = tcp_actual_pos
+                last_tcp_quat = tcp_actual_quat
+                pos_error = np.linalg.norm(tcp_actual_pos - self.tcp_ready)
+                ori_error_deg = self.distancia_angular_quat_deg(tcp_actual_quat, self.tcp_quat)
+
+                if not logged_once:
+                    self.get_logger().info(
+                        f"[SYNC FASE 4] Primer chequeo de pose:\n"
+                        f"  Lado: {self.cfg.side}\n"
+                        f"  Etapa transferencia: {self.transfer_stage}\n"
+                        f"  TCP Actual: pos={tcp_actual_pos.tolist()}, quat={tcp_actual_quat.tolist()}\n"
+                        f"  TCP Ready: pos={self.tcp_ready.tolist()}, quat={self.tcp_quat.tolist()}\n"
+                        f"  TCP Contact: pos={self.tcp_contact.tolist()}\n"
+                        f"  Error pos: {pos_error:.4f} (tol: {self.phase4_tcp_position_tolerance})\n"
+                        f"  Error ori (deg): {ori_error_deg:.2f} (tol: {self.phase4_tcp_orientation_tolerance_deg})"
+                    )
+                    logged_once = True
+
+                if (pos_error <= self.phase4_tcp_position_tolerance and
+                        ori_error_deg <= self.phase4_tcp_orientation_tolerance_deg):
+                    self.get_logger().info(
+                        f"[SYNC FASE 4] Confirmación: TCP cerca de tcp_ready. "
+                        f"pos_error={pos_error:.4f}, ori_error_deg={ori_error_deg:.2f}"
+                    )
+                    return True
+            else:
+                if not logged_once:
+                    self.get_logger().warning(
+                        f"[SYNC FASE 4] No se pudo obtener la pose actual del TCP en el primer intento.\n"
+                        f"  Lado: {self.cfg.side}\n"
+                        f"  Etapa transferencia: {self.transfer_stage}\n"
+                        f"  TCP Ready: pos={self.tcp_ready.tolist()}, quat={self.tcp_quat.tolist()}\n"
+                        f"  TCP Contact: pos={self.tcp_contact.tolist()}"
+                    )
+                    logged_once = True
+
+            time.sleep(self.phase4_start_sync_poll_dt)
+
+        self.get_logger().error(
+            f"[SYNC FASE 4] ERROR: Timeout de sincronización alcanzado ({self.phase4_start_sync_timeout} s).\n"
+            f"  Último TCP medido: pos={last_tcp_pos.tolist()}, quat={last_tcp_quat.tolist()}\n"
+            f"  TCP Ready: pos={self.tcp_ready.tolist()}, quat={self.tcp_quat.tolist()}\n"
+            f"  Último error pos: {pos_error:.4f} (tol: {self.phase4_tcp_position_tolerance})\n"
+            f"  Último error ori (deg): {ori_error_deg:.2f} (tol: {self.phase4_tcp_orientation_tolerance_deg})"
+        )
+        return False
+
     def limpiar_escena(self) -> None:
         self.get_logger().info('Limpiando escena de planificación...')
+        # Compatibilidad visual
         self.remover_objetos_adjuntos()
         self.remover_objetos_mundo()
+        co_mesa = CollisionObject()
+        co_mesa.header.frame_id = self.base_frame
+        co_mesa.id = 'mesa_trabajo'
+        co_mesa.operation = CollisionObject.REMOVE
+        self.collision_pub.publish(co_mesa)
+
+        # Servicio
+        co_manipulado = CollisionObject()
+        co_manipulado.header.frame_id = self.base_frame
+        co_manipulado.id = 'objeto_manipulado'
+        co_manipulado.operation = CollisionObject.REMOVE
+
+        co_interno = CollisionObject()
+        co_interno.header.frame_id = self.base_frame
+        co_interno.id = 'objeto_interno_colision'
+        co_interno.operation = CollisionObject.REMOVE
+
+        aco_manipulado = AttachedCollisionObject()
+        aco_manipulado.link_name = self.cfg.ee_link
+        aco_manipulado.object.id = 'objeto_manipulado'
+        aco_manipulado.object.operation = CollisionObject.REMOVE
+
+        aco_interno = AttachedCollisionObject()
+        aco_interno.link_name = self.cfg.ee_link
+        aco_interno.object.id = 'objeto_interno_colision'
+        aco_interno.object.operation = CollisionObject.REMOVE
+
+        self.aplicar_planning_scene(
+            collision_objects=[co_manipulado, co_interno, co_mesa],
+            attached_collision_objects=[aco_manipulado, aco_interno],
+            is_diff=True,
+            label='limpiar_escena'
+        )
 
         # Remover mesa_trabajo
         co = CollisionObject()
@@ -672,7 +1391,7 @@ class SingleArmFaceApproachGraspNode(Node):
         profundidad_mesa = 0.8
         grosor_mesa = 0.05
         dist_robot_mesa = 0.15
-        z_superficie_mesa = -0.04
+        z_superficie_mesa = 0.0424
 
         mesa = CollisionObject()
         mesa.header.frame_id = self.base_frame
@@ -689,11 +1408,34 @@ class SingleArmFaceApproachGraspNode(Node):
         pose.position.z = z_superficie_mesa - grosor_mesa / 2.0
         pose.orientation.w = 1.0
 
+        z_superior_real = pose.position.z + grosor_mesa / 2.0
+        z_inferior_real = pose.position.z - grosor_mesa / 2.0
+        self.get_logger().info(
+            f"[DIAGNÓSTICO MESA] Registrando mesa de colisión:\n"
+            f"  z_superficie_mesa configurada: {z_superficie_mesa:.4f}\n"
+            f"  z superior real de la caja: {z_superior_real:.4f}\n"
+            f"  z inferior real de la caja: {z_inferior_real:.4f}\n"
+            f"  grosor_mesa: {grosor_mesa:.4f}"
+        )
+
         mesa.primitives.append(box)
         mesa.primitive_poses.append(pose)
+        
+        # Compatibilidad visual
         self.collision_pub.publish(mesa)
+
+        # Aplicar determinista
+        success = self.aplicar_planning_scene(
+            collision_objects=[mesa],
+            is_diff=True,
+            label='añadir_mesa_colision'
+        )
+        if not success:
+            self.get_logger().error('Fallo al añadir la mesa por servicio. Abortando...')
+            rclpy.shutdown()
+            return
+            
         self.get_logger().info('Mesa registrada como geometría de colisión.')
-        time.sleep(0.5)
 
     def crear_primitiva_objeto(self, interno: bool = False) -> SolidPrimitive:
         primitive = SolidPrimitive()
@@ -731,14 +1473,68 @@ class SingleArmFaceApproachGraspNode(Node):
         return self.crear_pose_objeto_en(self.object_position)
 
     def añadir_objeto_colision_mundo(self) -> None:
+        # Construir objetos
+        obj_main = CollisionObject()
+        obj_main.header.frame_id = self.base_frame
+        obj_main.id = 'objeto_manipulado'
+        obj_main.operation = CollisionObject.ADD
+        obj_main.primitives.append(self.crear_primitiva_objeto(interno=False))
+        obj_main.primitive_poses.append(self.crear_pose_objeto_mundo())
+
+        collision_objects = [obj_main]
+
+        if self.use_inner_collision_object:
+            obj_inner = CollisionObject()
+            obj_inner.header.frame_id = self.base_frame
+            obj_inner.id = 'objeto_interno_colision'
+            obj_inner.operation = CollisionObject.ADD
+            obj_inner.primitives.append(self.crear_primitiva_objeto(interno=True))
+            obj_inner.primitive_poses.append(self.crear_pose_objeto_mundo())
+            collision_objects.append(obj_inner)
+
+        # Compatibilidad visual
         self.publicar_objeto_mundo(self.object_position, interno=False)
         self.publicar_objeto_mundo(self.object_position, interno=True)
+
+        # Aplicar
+        success = self.aplicar_planning_scene(
+            collision_objects=collision_objects,
+            is_diff=True,
+            label='añadir_objeto_colision_mundo'
+        )
+        if not success:
+            self.get_logger().error('Fallo al registrar el objeto en el mundo. Abortando...')
+            rclpy.shutdown()
+            return
+
+        # Verificar
+        verified = self.verificar_objeto_en_mundo_no_attached('objeto_manipulado')
+        if not verified:
+            self.get_logger().error('Verificación fallida al registrar objeto en mundo. Abortando...')
+            rclpy.shutdown()
+            return
+
         self.get_logger().info('Objeto principal e interno registrados como geometrías de colisión.')
-        time.sleep(0.5)
 
     def remover_objeto_mundo(self) -> None:
         self.remover_objetos_mundo()
-        time.sleep(0.2)
+        
+        # Eliminar por servicio
+        co_manipulado = CollisionObject()
+        co_manipulado.header.frame_id = self.base_frame
+        co_manipulado.id = 'objeto_manipulado'
+        co_manipulado.operation = CollisionObject.REMOVE
+
+        co_interno = CollisionObject()
+        co_interno.header.frame_id = self.base_frame
+        co_interno.id = 'objeto_interno_colision'
+        co_interno.operation = CollisionObject.REMOVE
+        
+        self.aplicar_planning_scene(
+            collision_objects=[co_manipulado, co_interno],
+            is_diff=True,
+            label='remover_objeto_mundo'
+        )
 
     def touch_links_dedos(self) -> List[str]:
         if self.touch_mode == 'none':
@@ -766,38 +1562,157 @@ class SingleArmFaceApproachGraspNode(Node):
         return [self.cfg.ee_link, f'{p}hand_base_link'] + dedos
 
     def adjuntar_objeto_al_tcp(self) -> None:
-        self.remover_objetos_mundo()
-        time.sleep(0.2)
+        # Remover del mundo
+        co_manipulado_remove = CollisionObject()
+        co_manipulado_remove.header.frame_id = self.base_frame
+        co_manipulado_remove.id = 'objeto_manipulado'
+        co_manipulado_remove.operation = CollisionObject.REMOVE
 
-        # 1. Adjuntar Objeto Principal
-        self.adjuntar_objeto('objeto_manipulado', interno=False, touch_links=self.touch_links_dedos())
+        co_interno_remove = CollisionObject()
+        co_interno_remove.header.frame_id = self.base_frame
+        co_interno_remove.id = 'objeto_interno_colision'
+        co_interno_remove.operation = CollisionObject.REMOVE
 
-        # 2. Adjuntar Objeto Interno
+        self.aplicar_planning_scene(
+            collision_objects=[co_manipulado_remove, co_interno_remove],
+            is_diff=True,
+            label='adjuntar_objeto_al_tcp_remove'
+        )
+
+        # Construir y aplicar attached objects
+        aco_main = AttachedCollisionObject()
+        aco_main.link_name = self.cfg.ee_link
+        aco_main.touch_links = self.touch_links_dedos()
+        
+        obj_main = CollisionObject()
+        obj_main.header.frame_id = self.base_frame
+        obj_main.id = 'objeto_manipulado'
+        obj_main.operation = CollisionObject.ADD
+        obj_main.primitives.append(self.crear_primitiva_objeto(interno=False))
+        obj_main.primitive_poses.append(self.crear_pose_objeto_mundo())
+        aco_main.object = obj_main
+
+        attached_objects = [aco_main]
+
         p = self.cfg.link_prefix
+        if self.use_inner_collision_object:
+            aco_inner = AttachedCollisionObject()
+            aco_inner.link_name = self.cfg.ee_link
+            aco_inner.touch_links = [self.cfg.ee_link, f'{p}hand_base_link']
+            
+            obj_inner = CollisionObject()
+            obj_inner.header.frame_id = self.base_frame
+            obj_inner.id = 'objeto_interno_colision'
+            obj_inner.operation = CollisionObject.ADD
+            obj_inner.primitives.append(self.crear_primitiva_objeto(interno=True))
+            obj_inner.primitive_poses.append(self.crear_pose_objeto_mundo())
+            aco_inner.object = obj_inner
+            
+            attached_objects.append(aco_inner)
+
+        # Compatibilidad visual
+        self.remover_objetos_mundo()
+        self.adjuntar_objeto('objeto_manipulado', interno=False, touch_links=self.touch_links_dedos())
         self.adjuntar_objeto('objeto_interno_colision', interno=True, touch_links=[self.cfg.ee_link, f'{p}hand_base_link'])
+
+        # Aplicar attach
+        success = self.aplicar_planning_scene(
+            attached_collision_objects=attached_objects,
+            is_diff=True,
+            label='adjuntar_objeto_al_tcp_attach'
+        )
+        if not success:
+            self.get_logger().error('Fallo al adjuntar objetos por servicio. Abortando...')
+            rclpy.shutdown()
+            return
+
+        # Verificar
+        verified = self.verificar_objeto_attached('objeto_manipulado')
+        if not verified:
+            self.get_logger().error('Verificación fallida al adjuntar objeto al TCP. Abortando...')
+            rclpy.shutdown()
+            return
 
         self.get_logger().info(
             'Objeto principal e interno adjuntados al TCP. '
             'El objeto interno carece de touch_links en los dedos para simular sensor propioceptivo en RViz.'
         )
-        time.sleep(0.8)
 
     def registrar_objeto_en_destino(self) -> None:
         self.get_logger().info('Registrando objeto en el destino final/mesa...')
-        self.remover_objetos_adjuntos()
 
+        # 1. Remover objetos attached
+        aco_manipulado_remove = AttachedCollisionObject()
+        aco_manipulado_remove.link_name = self.cfg.ee_link
+        aco_manipulado_remove.object.id = 'objeto_manipulado'
+        aco_manipulado_remove.object.operation = CollisionObject.REMOVE
+
+        aco_interno_remove = AttachedCollisionObject()
+        aco_interno_remove.link_name = self.cfg.ee_link
+        aco_interno_remove.object.id = 'objeto_interno_colision'
+        aco_interno_remove.object.operation = CollisionObject.REMOVE
+
+        success_detach = self.aplicar_planning_scene(
+            attached_collision_objects=[aco_manipulado_remove, aco_interno_remove],
+            is_diff=True,
+            label='registrar_objeto_en_destino_detach'
+        )
+        if not success_detach:
+            self.get_logger().error('Fallo al desadjuntar objetos por servicio. Abortando...')
+            rclpy.shutdown()
+            return
+
+        # 2. Actualizar posiciones
         self.object_position = self.place_object_center.copy()
         self.object_yaw_rad = self.target_object_yaw_rad
 
+        # 3. Construir CollisionObjects usando crear_pose_objeto_en(self.object_position, self.object_yaw_rad)
+        obj_main = CollisionObject()
+        obj_main.header.frame_id = self.base_frame
+        obj_main.id = 'objeto_manipulado'
+        obj_main.operation = CollisionObject.ADD
+        obj_main.primitives.append(self.crear_primitiva_objeto(interno=False))
+        obj_main.primitive_poses.append(self.crear_pose_objeto_en(self.object_position, self.object_yaw_rad))
+
+        collision_objects = [obj_main]
+
+        if self.use_inner_collision_object:
+            obj_inner = CollisionObject()
+            obj_inner.header.frame_id = self.base_frame
+            obj_inner.id = 'objeto_interno_colision'
+            obj_inner.operation = CollisionObject.ADD
+            obj_inner.primitives.append(self.crear_primitiva_objeto(interno=True))
+            obj_inner.primitive_poses.append(self.crear_pose_objeto_en(self.object_position, self.object_yaw_rad))
+            collision_objects.append(obj_inner)
+
+        # Compatibilidad visual
+        self.remover_objetos_adjuntos()
         self.publicar_objeto_mundo(self.object_position, interno=False)
         self.publicar_objeto_mundo(self.object_position, interno=True)
+
+        # 4. Aplicar al mundo
+        success_place = self.aplicar_planning_scene(
+            collision_objects=collision_objects,
+            is_diff=True,
+            label='registrar_objeto_en_destino_place'
+        )
+        if not success_place:
+            self.get_logger().error('Fallo al registrar objetos en destino por servicio. Abortando...')
+            rclpy.shutdown()
+            return
+
+        # 5. Verificar objeto en mundo no attached
+        verified = self.verificar_objeto_en_mundo_no_attached('objeto_manipulado', timeout_sec=2.0)
+        if not verified:
+            self.get_logger().error('Verificación fallida al registrar objeto en destino. Abortando...')
+            rclpy.shutdown()
+            return
 
         self.get_logger().info(
             f'Confirmación: Objeto registrado como colisión del mundo en destino. '
             f'Posición: {self.object_position.tolist()} | '
             f'Yaw: {math.degrees(self.object_yaw_rad):.2f}°'
         )
-        time.sleep(0.5)
 
     # ======================================================================
     # Geometría de agarre
@@ -1040,6 +1955,14 @@ class SingleArmFaceApproachGraspNode(Node):
 
     def planificar_a_pose(self, pos: np.ndarray, quat: np.ndarray, phase: int, label: str) -> None:
         self.get_logger().info(f'Planificando fase {phase}: {label}')
+        
+        if self.enable_state_validity_diagnostics:
+            valid_curr = self.verificar_estado_actual(f"antes de fase {phase} - {label}")
+            if self.abort_on_invalid_state_before_motion and not valid_curr:
+                self.get_logger().error(f"Abortando: estado actual inválido antes de fase {phase} - {label}.")
+                rclpy.shutdown()
+                return
+
         res_ik = self.get_ik(pos, quat, avoid_collisions=True)
 
         if res_ik.error_code.val != 1:
@@ -1057,6 +1980,13 @@ class SingleArmFaceApproachGraspNode(Node):
 
             rclpy.shutdown()
             return
+
+        if self.enable_state_validity_diagnostics:
+            valid_ik = self.verificar_estado_ik(res_ik, f"goal IK fase {phase} - {label}")
+            if self.abort_on_invalid_state_before_motion and not valid_ik:
+                self.get_logger().error(f"Abortando: estado objetivo IK inválido para fase {phase} - {label}.")
+                rclpy.shutdown()
+                return
 
         names, positions = self.filtrar_joints_brazo(res_ik)
         self.enviar_meta_articular_brazo(names, positions, phase=phase)
@@ -1313,7 +2243,36 @@ class SingleArmFaceApproachGraspNode(Node):
 
     def ejecutar_fase_4_aproximacion_frontal(self) -> None:
         self.get_logger().info('=== FASE 4: Aproximación frontal hacia cara del objeto ===')
-        self.planificar_a_pose(self.tcp_contact, self.tcp_quat, phase=4, label='aproximación a cara del objeto')
+        
+        # Sincronización y diagnóstico del TCP actual contra tcp_ready
+        if not self.esperar_tcp_cerca_de_ready_para_fase4():
+            self.get_logger().error("Abortando Fase 4: TCP actual no está suficientemente cerca de tcp_ready tras Fase 3.")
+            rclpy.shutdown()
+            return
+
+        if self.use_cartesian_local_motions:
+            # Diagnóstico específico de Fase 4 antes de ejecutar el cartesiano
+            dist_lineal_esperada = np.linalg.norm(self.tcp_contact - self.tcp_ready)
+            self.get_logger().info(
+                f"[DIAGNÓSTICO FASE 4] Parámetros de aproximación frontal cartesiana:\n"
+                f"  Lado: {self.cfg.side}\n"
+                f"  Etapa de transferencia: {self.transfer_stage}\n"
+                f"  TCP Ready: {self.tcp_ready.tolist()}\n"
+                f"  TCP Contact: {self.tcp_contact.tolist()}\n"
+                f"  Distancia lineal esperada: {dist_lineal_esperada:.4f} m\n"
+                f"  Dirección aproximación (world): {self.approach_dir_world.tolist()}\n"
+                f"  Posición del objeto: {self.object_position.tolist()}\n"
+                f"  Yaw del objeto (rad): {self.object_yaw_rad:.4f}"
+            )
+            self.ejecutar_movimiento_cartesiano_local(
+                target_pos=self.tcp_contact,
+                target_quat=self.tcp_quat,
+                phase=4,
+                label="aproximación cartesiana frontal a cara del objeto",
+                on_success="phase4_done"
+            )
+        else:
+            self.planificar_a_pose(self.tcp_contact, self.tcp_quat, phase=4, label='aproximación a cara del objeto')
 
     def ejecutar_fase_5_cierre_adaptativo(self) -> None:
         self.get_logger().info('=== FASE 5: Iniciando cierre de mano ===')
@@ -1352,7 +2311,16 @@ class SingleArmFaceApproachGraspNode(Node):
     def ejecutar_fase_9_descenso_colocacion(self) -> None:
         self.get_logger().info('=== FASE 9: Descenso a pose de colocación ===')
         self.get_logger().info(f'Pose TCP de colocación (place): {self.tcp_place.tolist()}')
-        self.planificar_a_pose(self.tcp_place, self.tcp_quat_place, phase=9, label='descenso a colocación')
+        if self.use_cartesian_local_motions:
+            self.ejecutar_movimiento_cartesiano_local(
+                target_pos=self.tcp_place,
+                target_quat=self.tcp_quat_place,
+                phase=9,
+                label="descenso cartesiano local de colocación",
+                on_success="phase9_done"
+            )
+        else:
+            self.planificar_a_pose(self.tcp_place, self.tcp_quat_place, phase=9, label='descenso a colocación')
 
     def ejecutar_fase_10_apertura_mano(self) -> None:
         self.get_logger().info('=== FASE 10: Apertura de mano para liberación ===')
@@ -1363,20 +2331,6 @@ class SingleArmFaceApproachGraspNode(Node):
         self.registrar_objeto_en_destino()
         self.current_phase = 11
         self.ejecutar_siguiente_fase()
-
-    def ejecutar_retirada_cartesiana_local_desde_place(self) -> None:
-        """
-        Placeholder para la futura implementación de la retirada cartesiana local.
-        
-        Comentarios/Indicaciones de diseño:
-        - Se usará luego para retirar la mano desde tcp_place hacia tcp_place_retreat en línea recta.
-        - Será útil para movimientos cercanos al cubo y mesa.
-        - Debe usar compute_cartesian_path o una interfaz equivalente de MoveIt (ej. invocar el servicio de planificación cartesiana).
-        - No debe usarse para traslados largos.
-        """
-        self.get_logger().warn(
-            "Movimiento cartesiano local aún no implementado; usando retirada por pose/home."
-        )
 
     def ejecutar_fase_12_retirada_segura(self) -> None:
         self.get_logger().info('=== FASE 12: Retirada segura del brazo hacia posición de reposo ===')
@@ -1397,27 +2351,59 @@ class SingleArmFaceApproachGraspNode(Node):
             self.get_logger().info('------------------------------')
             
         if self.use_cartesian_local_motions:
-            self.ejecutar_retirada_cartesiana_local_desde_place()
-            
-        if self.use_split_place_retreat:
             if not self.retreat_done:
-                # Primero, retiramos lateralmente hacia afuera
-                self.get_logger().info('Fase 12 - Parte 1: Retirada lateral hacia afuera (alejándose del objeto)...')
-                self.planificar_a_pose(self.tcp_place_retreat, self.tcp_quat_place, phase=12, label='retirada lateral de colocación')
+                self.ejecutar_movimiento_cartesiano_local(
+                    target_pos=self.tcp_place_retreat,
+                    target_quat=self.tcp_quat_place,
+                    phase=12,
+                    label="retirada cartesiana local desde objeto colocado",
+                    on_success="phase12_retreat_done",
+                    allow_release_contacts=True
+                )
             else:
-                # Segundo, vamos a home
                 self.get_logger().info('Fase 12 - Parte 2: Moviendo a posición de reposo neutral...')
+                if self.enable_state_validity_diagnostics:
+                    valid_curr = self.verificar_estado_actual("antes de home articular Fase 12")
+                    if self.abort_on_invalid_state_before_motion and not valid_curr:
+                        self.get_logger().error("Abortando: estado actual inválido antes de iniciar home articular de Fase 12.")
+                        rclpy.shutdown()
+                        return
                 names = self.cfg.arm_joints
                 positions = [0.0] * len(self.cfg.arm_joints)
                 self.get_logger().info(f'Planificando articulaciones hacia pose de reposo neutral ("home_{self.cfg.side}")...')
                 self.enviar_meta_articular_brazo(names, positions, phase=12)
         else:
-            # Ir directamente a home
-            self.get_logger().info('Fase 12: Moviendo directamente a posición de reposo neutral (bypasseando retirada lateral)...')
-            names = self.cfg.arm_joints
-            positions = [0.0] * len(self.cfg.arm_joints)
-            self.get_logger().info(f'Planificando articulaciones hacia pose de reposo neutral ("home_{self.cfg.side}")...')
-            self.enviar_meta_articular_brazo(names, positions, phase=12)
+            if self.use_split_place_retreat:
+                if not self.retreat_done:
+                    # Primero, retiramos lateralmente hacia afuera
+                    self.get_logger().info('Fase 12 - Parte 1: Retirada lateral hacia afuera (alejándose del objeto)...')
+                    self.planificar_a_pose(self.tcp_place_retreat, self.tcp_quat_place, phase=12, label='retirada lateral de colocación')
+                else:
+                    # Segundo, vamos a home
+                    self.get_logger().info('Fase 12 - Parte 2: Moviendo a posición de reposo neutral...')
+                    if self.enable_state_validity_diagnostics:
+                        valid_curr = self.verificar_estado_actual("antes de home articular Fase 12")
+                        if self.abort_on_invalid_state_before_motion and not valid_curr:
+                            self.get_logger().error("Abortando: estado actual inválido antes de iniciar home articular de Fase 12.")
+                            rclpy.shutdown()
+                            return
+                    names = self.cfg.arm_joints
+                    positions = [0.0] * len(self.cfg.arm_joints)
+                    self.get_logger().info(f'Planificando articulaciones hacia pose de reposo neutral ("home_{self.cfg.side}")...')
+                    self.enviar_meta_articular_brazo(names, positions, phase=12)
+            else:
+                # Ir directamente a home
+                self.get_logger().info('Fase 12: Moviendo directamente a posición de reposo neutral (bypasseando retirada lateral)...')
+                if self.enable_state_validity_diagnostics:
+                    valid_curr = self.verificar_estado_actual("antes de home articular Fase 12")
+                    if self.abort_on_invalid_state_before_motion and not valid_curr:
+                        self.get_logger().error("Abortando: estado actual inválido antes de iniciar home articular de Fase 12.")
+                        rclpy.shutdown()
+                        return
+                names = self.cfg.arm_joints
+                positions = [0.0] * len(self.cfg.arm_joints)
+                self.get_logger().info(f'Planificando articulaciones hacia pose de reposo neutral ("home_{self.cfg.side}")...')
+                self.enviar_meta_articular_brazo(names, positions, phase=12)
 
     def ejecutar_siguiente_fase(self) -> None:
         if self.current_phase == 1:
