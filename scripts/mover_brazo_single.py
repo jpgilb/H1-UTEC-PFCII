@@ -66,6 +66,43 @@ from visualization_msgs.msg import Marker
 
 
 @dataclass
+class QueuedObject:
+    frame: str
+    object_type: str
+    dimension: float
+    priority: int
+    raw_position: Optional[np.ndarray] = None
+    corrected_position: Optional[np.ndarray] = None
+    initial_quat_xyzw: Optional[np.ndarray] = None
+    raw_yaw_rad: float = 0.0
+    functional_yaw_rad: float = 0.0
+    available: bool = False
+    processed: bool = False
+    failed: bool = False
+    final_position: Optional[np.ndarray] = None
+    final_yaw_rad: float = 0.0
+    final_status: str = "pending"
+    initial_arm: str = ""
+    
+    @property
+    def initial_position(self) -> Optional[np.ndarray]:
+        return self.corrected_position
+        
+    @initial_position.setter
+    def initial_position(self, val: Optional[np.ndarray]) -> None:
+        self.corrected_position = val
+
+    @property
+    def initial_yaw_rad(self) -> float:
+        return self.functional_yaw_rad
+
+    @initial_yaw_rad.setter
+    def initial_yaw_rad(self, val: float) -> None:
+        self.functional_yaw_rad = val
+
+
+
+@dataclass
 class ArmHandConfig:
     side: str
     arm_group: str
@@ -98,7 +135,7 @@ class SingleArmFaceApproachGraspNode(Node):
         # 3. PARÁMETROS DE PICK (AGARRE)
         # ======================================================================
         self.declare_parameter('hover_height', 0.120)              # Altura elevada sobre el objeto para preagarre [m]
-        self.declare_parameter('approach_distance', 0.080)         # Distancia de aproximación desde atrás en el eje -X local [m]
+        self.declare_parameter('approach_distance', 0.040)         # Distancia de aproximación desde atrás en el eje -X local [m]
         self.declare_parameter('surface_clearance', 0.012)         # Distancia mínima entre la palma y la cara del objeto [m]
         self.declare_parameter('lift_distance', 0.150)             # Altura de elevación vertical tras el agarre [m]
         self.declare_parameter('dz_offset', 0.020)                # Ajuste vertical del TCP (baja la mano para centrar dedos) [m]
@@ -109,7 +146,7 @@ class SingleArmFaceApproachGraspNode(Node):
         self.declare_parameter('place_x', 0.50)                    # Coordenada X final del objeto en la mesa [m]
         self.declare_parameter('place_y', 0.00)                    # Coordenada Y final del objeto en la mesa [m]
         self.declare_parameter('place_object_z', -9999.0)          # Altura Z del objeto en mesa (si es -9999.0 usa la Z detectada) [m]
-        self.declare_parameter('place_hover_height', 0.120)        # Altura elevada del TCP sobre la mesa para aproximarse al colocar [m]
+        self.declare_parameter('place_hover_height', 0.080)        # Altura elevada del TCP sobre la mesa para aproximarse al colocar [m]
         self.declare_parameter('post_place_retreat_height', 0.120) # Altura de retirada segura de la muñeca tras soltar [m]
         self.declare_parameter('place_z_margin', 0.002)            # Tolerancia de elevación Z para asentar el objeto [m]
 
@@ -175,6 +212,91 @@ class SingleArmFaceApproachGraspNode(Node):
         self.declare_parameter('cartesian_max_total_joint_delta', 2.0)
         self.declare_parameter('cartesian_phase4_max_total_joint_delta', 1.5)
         self.declare_parameter('cartesian_log_joint_deltas', True)
+        self.declare_parameter('phase4_motion_mode', 'ompl')  # 'cartesian' | 'ompl'
+
+        # ======================================================================
+        # 9. PARÁMETROS MODO ESTANTE (SHELF)
+        # ======================================================================
+        self.declare_parameter('manipulation_geometry_mode', 'shelf') # 'table' | 'shelf'
+        self.declare_parameter('shelf_pregrasp_distance', -1.0)       # default -1.0 to fallback to approach_distance
+        self.declare_parameter('shelf_surface_clearance', -1.0)       # default -1.0 to fallback to surface_clearance
+        self.declare_parameter('shelf_min_cartesian_fraction', 0.95)
+        self.declare_parameter('shelf_skip_vertical_descent', True)
+        self.declare_parameter('shelf_cartesian_grasp_enabled', True)
+        self.declare_parameter('shelf_lift_before_retreat_enabled', True)
+        self.declare_parameter('shelf_lift_before_retreat_distance', 0.010)
+        self.declare_parameter('shelf_lift_before_retreat_motion_mode', 'cartesian')
+        self.declare_parameter('shelf_retreat_keep_lift_height', True)
+        self.declare_parameter('place_geometry_mode', '')             # default empty to fallback to manipulation_geometry_mode
+        self.declare_parameter('target_slot_x', 9999.0)
+        self.declare_parameter('target_slot_y', 9999.0)
+        self.declare_parameter('target_slot_z', 9999.0)
+        self.declare_parameter('target_slot_yaw_deg', 9999.0)
+        self.declare_parameter('use_explicit_target_slot', False)
+        self.declare_parameter('shelf_access_direction_mode', 'base_axis')
+        self.declare_parameter('shelf_out_dir_x', -1.0)
+        self.declare_parameter('shelf_out_dir_y', 0.0)
+        self.declare_parameter('shelf_out_dir_z', 0.0)
+        self.declare_parameter('shelf_retreat_motion_mode', 'auto')
+        self.declare_parameter('shelf_insert_motion_mode', 'auto')
+        self.declare_parameter('shelf_post_place_retreat_motion_mode', 'auto')
+
+        # ======================================================================
+        # 10. PARÁMETROS DE ARUCO Y REFERENCIA DE OBJETO (Requerimiento A)
+        # Nota para simulación en RViz: se puede ejecutar con:
+        # use_aruco_table_target:=true, object_pose_reference:=top_face_center, use_aruco_table_height:=true
+        # ======================================================================
+        self.declare_parameter('use_aruco_table_target', False)
+        self.declare_parameter('table_target_frame', 'aruco_mesa')
+        self.declare_parameter('table_target_offset_x', 0.0)
+        self.declare_parameter('table_target_offset_y', 0.0)
+        self.declare_parameter('table_target_offset_z', 0.0)
+        self.declare_parameter('table_target_offset_mode', 'base')  # 'base' | 'marker_yaw'
+        self.declare_parameter('aruco_z_is_table_surface', True)
+        self.declare_parameter('object_pose_reference', 'center')  # 'center' | 'top_face_center'
+        self.declare_parameter('validate_aruco_table_target_ik', False)
+        self.declare_parameter('use_aruco_table_height', False)
+        self.declare_parameter('aruco_table_height_offset', -0.001)  # offset de altura de mesa en metros (ej. 1mm por debajo = -0.001)
+        self.declare_parameter('allow_cached_aruco_table_height', False)
+
+        # ======================================================================
+        # 11. PARÁMETROS DE CONFIRMACIÓN DE APERTURA DE MANO
+        # ======================================================================
+        self.declare_parameter('confirm_hand_open_before_detach', True)
+        self.declare_parameter('release_settle_time', 0.5)
+        self.declare_parameter('hand_open_position_tolerance', 0.08)
+        self.declare_parameter('allow_detach_without_hand_joint_feedback', True)
+
+        # ======================================================================
+        # 12. PARÁMETROS DE VALIDACIÓN GEOMÉTRICA DE TCP Y COLOCACIÓN MESA
+        # ======================================================================
+        self.declare_parameter('validate_tcp_before_detach', True)
+        self.declare_parameter('tcp_place_position_tolerance', 0.012)
+        self.declare_parameter('tcp_place_orientation_tolerance_deg', 8.0)
+        self.declare_parameter('abort_on_tcp_place_mismatch', True)
+        self.declare_parameter('table_place_motion_mode', 'cartesian')
+
+        # ======================================================================
+        # 13. PARÁMETROS DE COLA DE OBJETOS
+        # ======================================================================
+        self.declare_parameter('enable_object_queue', False)
+        self.declare_parameter('object_queue_frames', 'objeto_cubo,objeto_esfera')
+        self.declare_parameter('object_queue_types', 'cube,sphere')
+        self.declare_parameter('object_queue_dimensions', '0.055,0.055')
+        self.declare_parameter('object_queue_priorities', '1,2')
+        self.declare_parameter('queue_order_mode', 'priority')
+        self.declare_parameter('queue_register_inactive_objects_as_obstacles', True)
+        self.declare_parameter('queue_keep_processed_objects_as_obstacles', True)
+        self.declare_parameter('queue_continue_on_object_failure', False)
+
+        # ======================================================================
+        # 14. PARÁMETROS DE PLANIFICACIÓN OMPL
+        # ======================================================================
+        self.declare_parameter('ompl_num_planning_attempts', 60)
+        self.declare_parameter('ompl_allowed_planning_time', 15.0)
+        self.declare_parameter('ompl_max_velocity_scaling_factor', 0.10)
+        self.declare_parameter('ompl_max_acceleration_scaling_factor', 0.10)
+        self.declare_parameter('ompl_joint_goal_tolerance', 0.015)
 
         # --------------------------
         # CARGAR VALORES DE PARÁMETROS
@@ -248,6 +370,139 @@ class SingleArmFaceApproachGraspNode(Node):
         self.cartesian_max_total_joint_delta = float(self.get_parameter('cartesian_max_total_joint_delta').value)
         self.cartesian_phase4_max_total_joint_delta = float(self.get_parameter('cartesian_phase4_max_total_joint_delta').value)
         self.cartesian_log_joint_deltas = bool(self.get_parameter('cartesian_log_joint_deltas').value)
+        self.phase4_motion_mode = str(self.get_parameter('phase4_motion_mode').value).lower().strip()
+
+        self.manipulation_geometry_mode = str(self.get_parameter('manipulation_geometry_mode').value).lower().strip()
+        self.shelf_pregrasp_distance = float(self.get_parameter('shelf_pregrasp_distance').value)
+        if self.shelf_pregrasp_distance < 0.0:
+            self.shelf_pregrasp_distance = self.approach_distance
+            
+        self.shelf_surface_clearance = float(self.get_parameter('shelf_surface_clearance').value)
+        if self.shelf_surface_clearance < 0.0:
+            self.shelf_surface_clearance = self.surface_clearance
+            
+        self.shelf_min_cartesian_fraction = float(self.get_parameter('shelf_min_cartesian_fraction').value)
+        self.shelf_skip_vertical_descent = bool(self.get_parameter('shelf_skip_vertical_descent').value)
+        self.shelf_cartesian_grasp_enabled = bool(self.get_parameter('shelf_cartesian_grasp_enabled').value)
+        self.shelf_lift_before_retreat_enabled = bool(self.get_parameter('shelf_lift_before_retreat_enabled').value)
+        self.shelf_lift_before_retreat_distance = float(self.get_parameter('shelf_lift_before_retreat_distance').value)
+        self.shelf_lift_before_retreat_motion_mode = str(self.get_parameter('shelf_lift_before_retreat_motion_mode').value).lower().strip()
+        self.shelf_retreat_keep_lift_height = bool(self.get_parameter('shelf_retreat_keep_lift_height').value)
+        
+        place_geom = str(self.get_parameter('place_geometry_mode').value).lower().strip()
+        if place_geom == '':
+            self.place_geometry_mode = self.manipulation_geometry_mode
+        else:
+            self.place_geometry_mode = place_geom
+
+        self.target_slot_x = float(self.get_parameter('target_slot_x').value)
+        self.target_slot_y = float(self.get_parameter('target_slot_y').value)
+        self.target_slot_z = float(self.get_parameter('target_slot_z').value)
+        self.target_slot_yaw_deg = float(self.get_parameter('target_slot_yaw_deg').value)
+        self.use_explicit_target_slot = bool(self.get_parameter('use_explicit_target_slot').value)
+        self.shelf_access_direction_mode = str(self.get_parameter('shelf_access_direction_mode').value).lower().strip()
+        self.shelf_out_dir_x = float(self.get_parameter('shelf_out_dir_x').value)
+        self.shelf_out_dir_y = float(self.get_parameter('shelf_out_dir_y').value)
+        self.shelf_out_dir_z = float(self.get_parameter('shelf_out_dir_z').value)
+        self.shelf_retreat_motion_mode = str(self.get_parameter('shelf_retreat_motion_mode').value).lower().strip()
+        self.shelf_insert_motion_mode = str(self.get_parameter('shelf_insert_motion_mode').value).lower().strip()
+        self.shelf_post_place_retreat_motion_mode = str(self.get_parameter('shelf_post_place_retreat_motion_mode').value).lower().strip()
+
+        self.use_aruco_table_target = bool(self.get_parameter('use_aruco_table_target').value)
+        self.table_target_frame = str(self.get_parameter('table_target_frame').value)
+        self.table_target_offset_x = float(self.get_parameter('table_target_offset_x').value)
+        self.table_target_offset_y = float(self.get_parameter('table_target_offset_y').value)
+        self.table_target_offset_z = float(self.get_parameter('table_target_offset_z').value)
+        self.table_target_offset_mode = str(self.get_parameter('table_target_offset_mode').value).lower().strip()
+        self.aruco_z_is_table_surface = bool(self.get_parameter('aruco_z_is_table_surface').value)
+        self.object_pose_reference = str(self.get_parameter('object_pose_reference').value).lower().strip()
+        self.validate_aruco_table_target_ik = bool(self.get_parameter('validate_aruco_table_target_ik').value)
+        self.use_aruco_table_height = bool(self.get_parameter('use_aruco_table_height').value)
+        self.aruco_table_height_offset = float(self.get_parameter('aruco_table_height_offset').value)
+        self.allow_cached_aruco_table_height = bool(self.get_parameter('allow_cached_aruco_table_height').value)
+        
+        self.confirm_hand_open_before_detach = bool(self.get_parameter('confirm_hand_open_before_detach').value)
+        self.release_settle_time = float(self.get_parameter('release_settle_time').value)
+        self.hand_open_position_tolerance = float(self.get_parameter('hand_open_position_tolerance').value)
+        self.allow_detach_without_hand_joint_feedback = bool(self.get_parameter('allow_detach_without_hand_joint_feedback').value)
+
+        self.validate_tcp_before_detach = bool(self.get_parameter('validate_tcp_before_detach').value)
+        self.tcp_place_position_tolerance = float(self.get_parameter('tcp_place_position_tolerance').value)
+        self.tcp_place_orientation_tolerance_deg = float(self.get_parameter('tcp_place_orientation_tolerance_deg').value)
+        self.abort_on_tcp_place_mismatch = bool(self.get_parameter('abort_on_tcp_place_mismatch').value)
+        self.table_place_motion_mode = str(self.get_parameter('table_place_motion_mode').value).lower().strip()
+        if self.table_place_motion_mode not in ('cartesian', 'ompl', 'auto'):
+            raise ValueError('table_place_motion_mode debe ser "cartesian", "ompl" o "auto"')
+
+        # PARÁMETROS DE COLA DE OBJETOS
+        self.enable_object_queue = bool(self.get_parameter('enable_object_queue').value)
+        self.object_queue_frames_str = str(self.get_parameter('object_queue_frames').value)
+        self.object_queue_types_str = str(self.get_parameter('object_queue_types').value)
+        self.object_queue_dimensions_str = str(self.get_parameter('object_queue_dimensions').value)
+        self.object_queue_priorities_str = str(self.get_parameter('object_queue_priorities').value)
+        self.queue_order_mode = str(self.get_parameter('queue_order_mode').value).strip().lower()
+        self.queue_register_inactive_objects_as_obstacles = bool(self.get_parameter('queue_register_inactive_objects_as_obstacles').value)
+        self.queue_keep_processed_objects_as_obstacles = bool(self.get_parameter('queue_keep_processed_objects_as_obstacles').value)
+        self.queue_continue_on_object_failure = bool(self.get_parameter('queue_continue_on_object_failure').value)
+
+        # PARÁMETROS DE PLANIFICACIÓN OMPL
+        self.ompl_num_planning_attempts = int(self.get_parameter('ompl_num_planning_attempts').value)
+        self.ompl_allowed_planning_time = float(self.get_parameter('ompl_allowed_planning_time').value)
+        self.ompl_max_velocity_scaling_factor = float(self.get_parameter('ompl_max_velocity_scaling_factor').value)
+        self.ompl_max_acceleration_scaling_factor = float(self.get_parameter('ompl_max_acceleration_scaling_factor').value)
+        self.ompl_joint_goal_tolerance = float(self.get_parameter('ompl_joint_goal_tolerance').value)
+
+        # Validaciones OMPL
+        if self.ompl_num_planning_attempts < 1:
+            raise ValueError(f"ompl_num_planning_attempts ({self.ompl_num_planning_attempts}) debe ser >= 1")
+        if self.ompl_allowed_planning_time <= 0.0:
+            raise ValueError(f"ompl_allowed_planning_time ({self.ompl_allowed_planning_time}) debe ser > 0.0")
+        if not (0.0 < self.ompl_max_velocity_scaling_factor <= 1.0):
+            raise ValueError(f"ompl_max_velocity_scaling_factor ({self.ompl_max_velocity_scaling_factor}) debe estar en (0.0, 1.0]")
+        if not (0.0 < self.ompl_max_acceleration_scaling_factor <= 1.0):
+            raise ValueError(f"ompl_max_acceleration_scaling_factor ({self.ompl_max_acceleration_scaling_factor}) debe estar en (0.0, 1.0]")
+        if not (0.001 <= self.ompl_joint_goal_tolerance <= 0.05):
+            raise ValueError(f"ompl_joint_goal_tolerance ({self.ompl_joint_goal_tolerance}) debe estar en [0.001, 0.05]")
+
+        # Parsear y validar la cola
+        self.object_queue = []
+        if self.enable_object_queue:
+            frames_list = [f.strip() for f in self.object_queue_frames_str.split(',') if f.strip()]
+            types_list = [t.strip().lower() for t in self.object_queue_types_str.split(',') if t.strip()]
+            dims_str_list = [d.strip() for d in self.object_queue_dimensions_str.split(',') if d.strip()]
+            prios_str_list = [p.strip() for p in self.object_queue_priorities_str.split(',') if p.strip()]
+
+            if not (len(frames_list) == len(types_list) == len(dims_str_list) == len(prios_str_list)):
+                raise ValueError(
+                    f"Las listas de la cola de objetos tienen longitudes incompatibles: "
+                    f"frames={len(frames_list)}, types={len(types_list)}, dimensions={len(dims_str_list)}, priorities={len(prios_str_list)}"
+                )
+
+            for f, t, d_str, p_str in zip(frames_list, types_list, dims_str_list, prios_str_list):
+                if t not in ('cube', 'sphere'):
+                    raise ValueError(f"object_queue_types contiene valor inválido: '{t}'. Debe ser 'cube' o 'sphere'.")
+                
+                try:
+                    d = float(d_str)
+                except ValueError:
+                    raise ValueError(f"Dimensión inválida en la cola: '{d_str}'. Debe ser float.")
+                if d <= 0.0:
+                    raise ValueError(f"Dimensión debe ser mayor a cero: {d}")
+
+                try:
+                    p = int(p_str)
+                except ValueError:
+                    raise ValueError(f"Prioridad inválida en la cola: '{p_str}'. Debe ser int.")
+
+                self.object_queue.append(QueuedObject(
+                    frame=f,
+                    object_type=t,
+                    dimension=d,
+                    priority=p
+                ))
+
+            if self.queue_order_mode not in ("priority", "distance_to_base", "left_to_right", "right_to_left"):
+                raise ValueError(f"queue_order_mode contiene valor inválido: '{self.queue_order_mode}'")
 
         if self.arm_side not in ('left', 'right'):
             raise ValueError('arm_side debe ser "left" o "right"')
@@ -255,6 +510,63 @@ class SingleArmFaceApproachGraspNode(Node):
             raise ValueError('object_type debe ser "cube" o "sphere"')
         if self.object_dimension <= 0.0:
             raise ValueError('object_dimension debe ser mayor a cero')
+        if self.phase4_motion_mode not in ('cartesian', 'ompl'):
+            raise ValueError('phase4_motion_mode debe ser "cartesian" u "ompl"')
+        if self.manipulation_geometry_mode not in ('table', 'shelf'):
+            raise ValueError('manipulation_geometry_mode debe ser "table" o "shelf"')
+        if self.place_geometry_mode not in ('table', 'shelf'):
+            raise ValueError('place_geometry_mode debe ser "table" o "shelf"')
+        if self.shelf_min_cartesian_fraction < 0.90:
+            raise ValueError('shelf_min_cartesian_fraction no puede ser menor a 0.90')
+        # Rango recomendado para pruebas de shelf_lift_before_retreat_distance es 0.005–0.015 m
+        if self.shelf_lift_before_retreat_distance < 0.0 or self.shelf_lift_before_retreat_distance > 0.030:
+            raise ValueError('shelf_lift_before_retreat_distance debe estar en el rango [0.0, 0.030] metros')
+        if self.shelf_lift_before_retreat_motion_mode not in ('cartesian', 'ompl'):
+            raise ValueError('shelf_lift_before_retreat_motion_mode debe ser "cartesian" u "ompl"')
+
+        if self.shelf_access_direction_mode not in ('object_approach', 'base_axis'):
+            raise ValueError('shelf_access_direction_mode debe ser "object_approach" o "base_axis"')
+        
+        vec_norm = math.sqrt(self.shelf_out_dir_x**2 + self.shelf_out_dir_y**2 + self.shelf_out_dir_z**2)
+        if vec_norm < 1e-6:
+            raise ValueError(f"El vector shelf_out_dir [{self.shelf_out_dir_x}, {self.shelf_out_dir_y}, {self.shelf_out_dir_z}] tiene norma {vec_norm} menor que 1e-6")
+        
+        self.shelf_out_dir_world = np.array([
+            self.shelf_out_dir_x / vec_norm,
+            self.shelf_out_dir_y / vec_norm,
+            self.shelf_out_dir_z / vec_norm
+        ], dtype=float)
+
+        if self.shelf_retreat_motion_mode not in ('cartesian', 'ompl', 'auto'):
+            raise ValueError('shelf_retreat_motion_mode debe ser "cartesian", "ompl" o "auto"')
+        if self.shelf_insert_motion_mode not in ('cartesian', 'ompl', 'auto'):
+            raise ValueError('shelf_insert_motion_mode debe ser "cartesian", "ompl" o "auto"')
+        if self.shelf_post_place_retreat_motion_mode not in ('cartesian', 'ompl', 'auto'):
+            raise ValueError('shelf_post_place_retreat_motion_mode debe ser "cartesian", "ompl" o "auto"')
+
+        if self.shelf_pregrasp_distance > 0.10:
+            self.get_logger().warn(
+                f"[SHELF CORRIDOR] shelf_pregrasp_distance ({self.shelf_pregrasp_distance:.4f} m) es grande; "
+                "se recomienda motion_mode='auto' u 'ompl' para movimientos de corredor."
+            )
+
+        self.get_logger().info(
+            f"[SHELF ACCESS DIRECTION] shelf_out_dir_world inicializado en: {self.shelf_out_dir_world.tolist()}\n"
+            "  shelf_out_dir_world representa la dirección de salida desde el interior del estante hacia el robot.\n"
+            "  Si el frame 'pelvis' usa +X hacia delante del robot, el valor esperado para estantes frontales es aproximadamente [-1, 0, 0]."
+        )
+
+        if abs(self.shelf_out_dir_z) > 1e-3:
+            self.get_logger().warn(
+                f"[SHELF ACCESS DIRECTION] shelf_out_dir_z ({self.shelf_out_dir_z:.4f}) no es cero. "
+                "En esta etapa se recomienda una dirección de salida horizontal; "
+                "el clearance vertical ya se controla con micro-lift/lowering."
+            )
+
+        if self.table_target_offset_mode not in ('base', 'marker_yaw'):
+            raise ValueError('table_target_offset_mode debe ser "base" o "marker_yaw"')
+        if self.object_pose_reference not in ('center', 'top_face_center'):
+            raise ValueError('object_pose_reference debe ser "center" o "top_face_center"')
 
         self.cfg = self._build_arm_hand_config(self.arm_side)
 
@@ -266,6 +578,14 @@ class SingleArmFaceApproachGraspNode(Node):
         self.object_yaw_rad = 0.0
         self.object_quat_xyzw = np.array([0.0, 0.0, 0.0, 1.0], dtype=float)
 
+        self.raw_object_position = np.zeros(3, dtype=float)
+        self.last_aruco_table_position = np.zeros(3, dtype=float)
+        self.last_aruco_table_quat = np.array([0.0, 0.0, 0.0, 1.0], dtype=float)
+        self.last_aruco_table_yaw_rad = 0.0
+        self.last_table_destination = np.zeros(3, dtype=float)
+        self.last_valid_table_surface_z = None
+        self.hand_open_confirmed = False
+
         # Variables de control para transferencia bimanual
         self.initial_object_position = np.zeros(3, dtype=float)
         self.initial_object_yaw_rad = 0.0
@@ -275,6 +595,25 @@ class SingleArmFaceApproachGraspNode(Node):
         self.target_object_yaw_rad = 0.0
         self.tcp_place_retreat = np.zeros(3, dtype=float)
         self.retreat_done = False
+        self.shelf_lift_before_retreat_done = False
+        self.pending_phase7_lift_motion = False
+        self.tcp_post_grasp_lift = np.zeros(3, dtype=float)
+        self.tcp_pregrasp_lifted = np.zeros(3, dtype=float)
+        self.shelf_place_insert_lifted_done = False
+        self.shelf_place_lowering_done = False
+        self.pending_phase9_shelf_insert_lifted_motion = False
+        self.tcp_place_lifted = np.zeros(3, dtype=float)
+        self.shelf_out_dir_world = np.array([-1.0, 0.0, 0.0], dtype=float)
+        self.pending_phase12_shelf_retreat_motion = False
+
+        # Estado de cola de objetos
+        self.active_queued_object = None
+        self.queue_initialized = False
+        self.initial_queue_len = 0
+        self.ompl_fallback_count = 0
+        self.queue_start_time = None
+        self.planned_order_frames = []
+        self.executed_order_frames = []
 
         self.tcp_quat = np.array([0.0, 0.0, 0.0, 1.0], dtype=float)
         self.tcp_pregrasp = np.zeros(3, dtype=float)
@@ -439,6 +778,70 @@ class SingleArmFaceApproachGraspNode(Node):
         )
 
     def calcular_destino_mesa(self) -> np.ndarray:
+        if self.use_aruco_table_target:
+            # Comentario técnico explicando:
+            # El ArUco se usa como anclaje dinámico de mesa, no como objeto manipulable.
+            # Si aruco_z_is_table_surface=True, el centro del objeto colocado se calcula sumando el radio/semilado del objeto.
+            try:
+                aruco_pos, aruco_quat, aruco_yaw = self.lookup_frame_pose_in_base(self.table_target_frame)
+            except Exception as e:
+                self.get_logger().error(
+                    f"[FALLO INTEGRACIÓN ARUCO] No se encontró el frame ArUco '{self.table_target_frame}' "
+                    f"requerido para calcular destino de mesa: {str(e)}"
+                )
+                self.abortar_objeto_actual(f"Fallo de integración: frame ArUco '{self.table_target_frame}' faltante.")
+                if self.enable_object_queue:
+                    return np.zeros(3, dtype=float)
+                raise RuntimeError(f"Fallo de integración: frame ArUco '{self.table_target_frame}' faltante.") from e
+
+            # Offset de colocación
+            if self.table_target_offset_mode == 'marker_yaw':
+                cos_yaw = math.cos(aruco_yaw)
+                sin_yaw = math.sin(aruco_yaw)
+                offset_x_calc = self.table_target_offset_x * cos_yaw - self.table_target_offset_y * sin_yaw
+                offset_y_calc = self.table_target_offset_x * sin_yaw + self.table_target_offset_y * cos_yaw
+            else:  # 'base'
+                offset_x_calc = self.table_target_offset_x
+                offset_y_calc = self.table_target_offset_y
+
+            offset_z_calc = self.table_target_offset_z
+
+            x = aruco_pos[0] + offset_x_calc
+            y = aruco_pos[1] + offset_y_calc
+
+            if self.aruco_z_is_table_surface:
+                z = aruco_pos[2] + self.object_contact_radius() + self.place_z_margin + offset_z_calc
+            else:
+                z = aruco_pos[2] + self.place_z_margin + offset_z_calc
+
+            dest = np.array([x, y, z], dtype=float)
+
+            # Guardar en variables de clase para trazabilidad
+            self.last_aruco_table_position = aruco_pos
+            self.last_aruco_table_quat = aruco_quat
+            self.last_aruco_table_yaw_rad = aruco_yaw
+            self.last_table_destination = dest
+
+            self.get_logger().info(
+                f"[CALCULAR DESTINO MESA ARUCO]\n"
+                f"  Frame ArUco usado: {self.table_target_frame}\n"
+                f"  Pose ArUco en base: pos={aruco_pos.tolist()}, quat={aruco_quat.tolist()}\n"
+                f"  Yaw ArUco: {math.degrees(aruco_yaw):.2f}° ({aruco_yaw:.4f} rad)\n"
+                f"  Offset original: [{self.table_target_offset_x:.4f}, {self.table_target_offset_y:.4f}, {self.table_target_offset_z:.4f}]\n"
+                f"  Offset calculado: [{offset_x_calc:.4f}, {offset_y_calc:.4f}, {offset_z_calc:.4f}]\n"
+                f"  Modo de offset: {self.table_target_offset_mode}\n"
+                f"  ¿Z de ArUco es superficie de mesa?: {self.aruco_z_is_table_surface}\n"
+                f"  [PLACE Z CALCULADO] Z = {z:.4f} m (place_z_margin={self.place_z_margin:.4f} m sumado una sola vez)\n"
+                f"  Destino final de mesa calculado: {dest.tolist()}"
+            )
+
+            # Marker RViz de diagnóstico si está activo (Requerimiento 4)
+            if self.publish_debug_markers:
+                self.publicar_marker(aruco_pos, 30, 'aruco_table_reference', [0.0, 0.0, 1.0, 0.8], quat=aruco_quat, escala=0.03)
+                self.publicar_marker(dest, 31, 'aruco_table_destination', [0.8, 0.0, 0.8, 0.8], escala=self.object_dimension)
+
+            return dest
+
         x = self.initial_object_position[0] if self.use_initial_x_for_table else self.place_x
         y = self.table_transfer_y
         if self.use_initial_z_for_table:
@@ -449,6 +852,14 @@ class SingleArmFaceApproachGraspNode(Node):
         return np.array([x, y, z], dtype=float)
 
     def calcular_destino_final_espejado(self) -> np.ndarray:
+        if self.use_explicit_target_slot and self.place_geometry_mode == 'shelf':
+            x = self.target_slot_x if self.target_slot_x != 9999.0 else self.place_x
+            y = self.target_slot_y if self.target_slot_y != 9999.0 else self.place_y
+            z = (self.target_slot_z if self.target_slot_z != 9999.0 else 
+                 (self.initial_object_position[2] if self.place_object_z == -9999.0 else self.place_object_z))
+            z += self.place_z_margin
+            return np.array([x, y, z], dtype=float)
+
         x = self.initial_object_position[0] if self.keep_final_x_from_initial else self.place_x
         y = -self.initial_object_position[1] if self.final_mirror_y else self.place_y
         if self.keep_final_z_from_initial:
@@ -463,6 +874,15 @@ class SingleArmFaceApproachGraspNode(Node):
         self.pre_close_effort = None
         self.last_tick_effort = None
         self.retreat_done = False
+        self.shelf_lift_before_retreat_done = False
+        self.pending_phase7_lift_motion = False
+        self.tcp_post_grasp_lift = np.zeros(3, dtype=float)
+        self.tcp_pregrasp_lifted = np.zeros(3, dtype=float)
+        self.shelf_place_insert_lifted_done = False
+        self.shelf_place_lowering_done = False
+        self.pending_phase9_shelf_insert_lifted_motion = False
+        self.pending_phase12_shelf_retreat_motion = False
+        self.tcp_place_lifted = np.zeros(3, dtype=float)
         self.tcp_place_retreat = np.zeros(3, dtype=float)
         self.tcp_place = np.zeros(3, dtype=float)
         self.tcp_place_above = np.zeros(3, dtype=float)
@@ -479,6 +899,9 @@ class SingleArmFaceApproachGraspNode(Node):
         yaw_final = -self.initial_object_yaw_rad if self.final_mirror_yaw else self.initial_object_yaw_rad
         self.get_logger().info(f'[Transición] Destino final espejado: {dest_final.tolist()}')
         self.get_logger().info(f'[Transición] Yaw final espejado: {math.degrees(yaw_final):.2f}°')
+        
+        # después de calcular destino de mesa/final
+        self.log_task_descriptor_actual()
 
         self.configurar_brazo_activo(self.second_arm_side)
 
@@ -532,105 +955,247 @@ class SingleArmFaceApproachGraspNode(Node):
     # TF y marcadores
     # ======================================================================
 
-    def buscar_tf_y_ejecutar(self) -> None:
-        try:
-            trans = self.tf_buffer.lookup_transform(
-                self.base_frame,
-                self.object_frame,
-                rclpy.time.Time(),
-            )
-        except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException):
-            self.get_logger().info(f'Esperando TF2 de "{self.object_frame}" hacia "{self.base_frame}"...')
-            return
-
-        self.timer.cancel()
-        self.retreat_done = False
-
-        self.object_position = np.array([
+    def lookup_frame_pose_in_base(self, frame_name: str) -> Tuple[np.ndarray, np.ndarray, float]:
+        """
+        Busca la pose de un frame respecto al base_frame (Requerimiento C).
+        Retorna:
+          - np.ndarray [x, y, z]
+          - np.ndarray [qx, qy, qz, qw]
+          - float yaw en radianes
+        """
+        trans = self.tf_buffer.lookup_transform(
+            self.base_frame,
+            frame_name,
+            rclpy.time.Time()
+        )
+        pos = np.array([
             trans.transform.translation.x,
             trans.transform.translation.y,
-            trans.transform.translation.z,
+            trans.transform.translation.z
         ], dtype=float)
-
         q = trans.transform.rotation
-        self.object_quat_xyzw = np.array([q.x, q.y, q.z, q.w], dtype=float)
-        self.object_yaw_rad = float(
-            R.from_quat(self.object_quat_xyzw).as_euler('xyz', degrees=False)[2]
-        )
+        quat = np.array([q.x, q.y, q.z, q.w], dtype=float)
+        yaw = float(R.from_quat(quat).as_euler('xyz', degrees=False)[2])
+        return pos, quat, yaw
 
-        self.get_logger().info(
-            f'TF encontrada. Posición objeto={self.object_position.tolist()}, '
-            f'yaw={math.degrees(self.object_yaw_rad):.2f} deg'
-        )
+    def buscar_tf_y_ejecutar(self) -> None:
+        if self.enable_object_queue:
+            if self.queue_initialized:
+                return
 
-        # Copias al inicio
-        self.initial_object_position = np.copy(self.object_position)
-        self.initial_object_yaw_rad = self.object_yaw_rad
+            # Intentar resolver TFs para todos los objetos configurados en la cola
+            any_available = False
+            for obj in self.object_queue:
+                try:
+                    trans = self.tf_buffer.lookup_transform(
+                        self.base_frame,
+                        obj.frame,
+                        rclpy.time.Time(),
+                    )
+                    obj.raw_position = np.array([
+                        trans.transform.translation.x,
+                        trans.transform.translation.y,
+                        trans.transform.translation.z,
+                    ], dtype=float)
 
-        # Logs de inicialización
-        self.get_logger().info(f'Modo de tarea: {self.task_mode}')
-        self.get_logger().info(f'Pose inicial del objeto: {self.initial_object_position.tolist()}')
-        self.get_logger().info(f'Yaw inicial del objeto: {math.degrees(self.initial_object_yaw_rad):.2f} deg')
+                    q = trans.transform.rotation
+                    obj.initial_quat_xyzw = np.array([q.x, q.y, q.z, q.w], dtype=float)
+                    obj.raw_yaw_rad = float(
+                        R.from_quat(obj.initial_quat_xyzw).as_euler('xyz', degrees=False)[2]
+                    )
 
-        if self.task_mode == 'bimanual_transfer':
-            self.transfer_stage = 'source_to_table'
-            if self.initial_object_position[1] >= 0.0:
-                self.initial_arm_side = 'left'
-                self.second_arm_side = 'right'
-            else:
-                self.initial_arm_side = 'right'
-                self.second_arm_side = 'left'
-            self.arm_side = self.initial_arm_side
+                    # Corrección de posición
+                    obj.corrected_position = np.copy(obj.raw_position)
+                    if self.object_pose_reference == 'top_face_center' and obj.object_type == 'cube':
+                        z_correction = -obj.dimension / 2.0
+                        obj.corrected_position[2] += z_correction
+                        self.get_logger().info(
+                            f"[SUPUESTO GEOMÉTRICO QUEUE] Aplicando corrección Z de cara superior para {obj.frame}. "
+                            f"Desplazando Z global en {z_correction:.4f} m."
+                        )
 
-            self.get_logger().info(f'Primer brazo seleccionado: {self.initial_arm_side.upper()}')
-            self.get_logger().info(f'Segundo brazo seleccionado: {self.second_arm_side.upper()}')
+                    # Configuración de orientación
+                    if obj.object_type == 'sphere':
+                        obj.functional_yaw_rad = 0.0
+                        obj.initial_quat_xyzw = np.array([0.0, 0.0, 0.0, 1.0], dtype=float)
+                    else:
+                        obj.functional_yaw_rad = obj.raw_yaw_rad
 
-            dest_mesa = self.calcular_destino_mesa()
-            self.get_logger().info(f'Destino de mesa calculado: {dest_mesa.tolist()}')
+                    obj.available = True
+                    any_available = True
+                except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException) as e:
+                    self.get_logger().warn(f"[OBJECT QUEUE] TF de '{obj.frame}' no disponible hacia '{self.base_frame}': {str(e)}")
+                    obj.available = False
 
-            dest_final = self.calcular_destino_final_espejado()
-            self.get_logger().info(f'Destino final espejado calculado: {dest_final.tolist()}')
+            if not any_available:
+                self.get_logger().info("[OBJECT QUEUE] Esperando que al menos un TF de la cola esté disponible...")
+                return
+
+            # Filtrar y ordenar la cola
+            self.object_queue = [obj for obj in self.object_queue if obj.available]
+            self.initial_queue_len = len(self.object_queue)
+
+            if self.queue_order_mode == "priority":
+                self.object_queue.sort(key=lambda o: o.priority)
+            elif self.queue_order_mode == "distance_to_base":
+                for obj in self.object_queue:
+                    dist = math.sqrt(obj.corrected_position[0]**2 + obj.corrected_position[1]**2)
+                    self.get_logger().info(f"[OBJECT QUEUE] Objeto '{obj.frame}' distancia planar a la base: {dist:.4f} m")
+                self.object_queue.sort(key=lambda o: math.sqrt(o.corrected_position[0]**2 + o.corrected_position[1]**2))
+            elif self.queue_order_mode == "left_to_right":
+                self.object_queue.sort(key=lambda o: o.corrected_position[1], reverse=True)
+            elif self.queue_order_mode == "right_to_left":
+                self.object_queue.sort(key=lambda o: o.corrected_position[1])
+
+            self.planned_order_frames = [obj.frame for obj in self.object_queue]
+            self.timer.cancel()
+            self.queue_start_time = self.get_clock().now()
+            self.queue_initialized = True
+
+            planned_order_str = ", ".join(self.planned_order_frames)
+            self.get_logger().info(f"[OBJECT QUEUE] Cola de objetos inicializada y ordenada: [{planned_order_str}]")
+
+            self.iniciar_siguiente_objeto_de_cola()
+            return
+
         else:
-            # Switch inteligente de brazo basado en la Y del objeto o respeto de arm_side manual
-            if self.auto_select_arm_by_y:
-                if self.object_position[1] >= 0.0:
-                    self.arm_side = 'left'
+            try:
+                trans = self.tf_buffer.lookup_transform(
+                    self.base_frame,
+                    self.object_frame,
+                    rclpy.time.Time(),
+                )
+            except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException):
+                self.get_logger().info(f'Esperando TF2 de "{self.object_frame}" hacia "{self.base_frame}"...')
+                return
+
+            self.timer.cancel()
+            self.retreat_done = False
+            self.shelf_lift_before_retreat_done = False
+            self.pending_phase7_lift_motion = False
+            self.tcp_post_grasp_lift = np.zeros(3, dtype=float)
+            self.tcp_pregrasp_lifted = np.zeros(3, dtype=float)
+            self.shelf_place_insert_lifted_done = False
+            self.shelf_place_lowering_done = False
+            self.pending_phase9_shelf_insert_lifted_motion = False
+            self.pending_phase12_shelf_retreat_motion = False
+            self.tcp_place_lifted = np.zeros(3, dtype=float)
+
+            self.raw_object_position = np.array([
+                trans.transform.translation.x,
+                trans.transform.translation.y,
+                trans.transform.translation.z,
+            ], dtype=float)
+
+            self.object_position = np.copy(self.raw_object_position)
+            z_correction = 0.0
+            if self.object_pose_reference == 'top_face_center':
+                if self.object_type == 'cube':
+                    z_correction = -self.object_dimension / 2.0
+                    self.object_position[2] += z_correction
+                    self.get_logger().info(
+                        f"[SUPUESTO GEOMÉTRICO] Aplicando corrección Z de cara superior. Se asume que el cubo "
+                        f"está plano sobre una superficie horizontal global, desplazando Z global en {z_correction:.4f} m."
+                    )
                 else:
-                    self.arm_side = 'right'
+                    self.get_logger().warn(
+                        f"object_pose_reference es 'top_face_center' pero object_type es '{self.object_type}' (no 'cube'). "
+                        "No se aplica corrección en Z por ahora."
+                    )
+
+            q = trans.transform.rotation
+            self.object_quat_xyzw = np.array([q.x, q.y, q.z, q.w], dtype=float)
+            raw_object_yaw_rad = float(
+                R.from_quat(self.object_quat_xyzw).as_euler('xyz', degrees=False)[2]
+            )
+
+            if self.object_type == 'sphere':
                 self.get_logger().info(
-                    f'Selección AUTOMÁTICA de brazo (Y_objeto = {self.object_position[1]:.4f} m): '
-                    f'se seleccionó el brazo {self.arm_side.upper()}.'
+                    f"[SPHERE ORIENTATION] Se recibió yaw {raw_object_yaw_rad:.4f} rad ({math.degrees(raw_object_yaw_rad):.2f} deg) desde TF, "
+                    f"pero se ignora porque la esfera no requiere orientación. Se fuerza yaw funcional = 0.0 rad (0.0 deg). "
                 )
+                self.object_yaw_rad = 0.0
+                self.object_quat_xyzw = np.array([0.0, 0.0, 0.0, 1.0], dtype=float)
             else:
-                self.get_logger().info(
-                    f'Selección MANUAL de brazo respetada: '
-                    f'brazo {self.arm_side.upper()}.'
-                )
+                self.object_yaw_rad = raw_object_yaw_rad
 
-        # Validación de consistencia para la colocación en mesa
-        if self.enforce_place_side_consistency:
-            if self.arm_side == 'left' and self.place_y < 0.0:
-                self.get_logger().error(
-                    f'Error de consistencia: Brazo IZQUIERDO seleccionado pero place_y es negativo ({self.place_y:.4f} m). '
-                    'Abortando para evitar trayectoria cruzada.'
-                )
-                rclpy.shutdown()
-                return
-            elif self.arm_side == 'right' and self.place_y > 0.0:
-                self.get_logger().error(
-                    f'Error de consistencia: Brazo DERECHO seleccionado pero place_y es positivo ({self.place_y:.4f} m). '
-                    'Abortando para evitar trayectoria cruzada.'
-                )
-                rclpy.shutdown()
-                return
+            self.get_logger().info(
+                f'[TF OBJETO ENCONTRADA]\n'
+                f'  Posición cruda del objeto: {self.raw_object_position.tolist()}\n'
+                f'  Modo object_pose_reference: {self.object_pose_reference}\n'
+                f'  Corrección Z aplicada: {z_correction:.4f} m\n'
+                f'  Posición final usada como centro del objeto: {self.object_position.tolist()}\n'
+                f'  Yaw leído del TF: {math.degrees(raw_object_yaw_rad):.2f} deg\n'
+                f'  Yaw funcional usado por la lógica: {math.degrees(self.object_yaw_rad):.2f} deg'
+            )
 
-        # Reconfigurar de forma dinámica
-        self.configurar_brazo_activo(self.arm_side)
+            self.initial_object_position = np.copy(self.object_position)
+            self.initial_object_yaw_rad = 0.0 if self.object_type == 'sphere' else self.object_yaw_rad
 
-        if self.publish_debug_markers:
-            self.publicar_marker(self.object_position, 0, 'objeto', [0.1, 0.8, 0.1, 0.70], 0.045)
+            self.get_logger().info(f'Modo de tarea: {self.task_mode}')
+            self.get_logger().info(f'Pose inicial del objeto: {self.initial_object_position.tolist()}')
+            self.get_logger().info(f'Yaw inicial del objeto: {math.degrees(self.initial_object_yaw_rad):.2f} deg')
 
-        self.ejecutar_fase_1_preparar_escena_y_abrir_mano()
+            self.log_task_descriptor_actual()
+
+            if self.task_mode == 'bimanual_transfer':
+                self.transfer_stage = 'source_to_table'
+                if self.initial_object_position[1] >= 0.0:
+                    self.initial_arm_side = 'left'
+                    self.second_arm_side = 'right'
+                else:
+                    self.initial_arm_side = 'right'
+                    self.second_arm_side = 'left'
+                self.arm_side = self.initial_arm_side
+
+                self.get_logger().info(f'Primer brazo seleccionado: {self.initial_arm_side.upper()}')
+                self.get_logger().info(f'Segundo brazo seleccionado: {self.second_arm_side.upper()}')
+
+                dest_mesa = self.calcular_destino_mesa()
+                self.get_logger().info(f'Destino de mesa calculado: {dest_mesa.tolist()}')
+
+                dest_final = self.calcular_destino_final_espejado()
+                self.get_logger().info(f'Destino final espejado calculado: {dest_final.tolist()}')
+
+                self.log_task_descriptor_actual()
+            else:
+                if self.auto_select_arm_by_y:
+                    if self.object_position[1] >= 0.0:
+                        self.arm_side = 'left'
+                    else:
+                        self.arm_side = 'right'
+                    self.get_logger().info(
+                        f'Selección AUTOMÁTICA de brazo (Y_objeto = {self.object_position[1]:.4f} m): '
+                        f'se seleccionó el brazo {self.arm_side.upper()}.'
+                    )
+                else:
+                    self.get_logger().info(
+                        f'Selección MANUAL de brazo respetada: '
+                        f'brazo {self.arm_side.upper()}.'
+                    )
+
+            if self.enforce_place_side_consistency:
+                if self.arm_side == 'left' and self.place_y < 0.0:
+                    self.get_logger().error(
+                        f'Error de consistencia: Brazo IZQUIERDO seleccionado pero place_y es negativo ({self.place_y:.4f} m). '
+                        'Abortando para evitar trayectoria cruzada.'
+                    )
+                    self.abortar_objeto_actual('Error de consistencia: Brazo IZQUIERDO seleccionado pero place_y es negativo')
+                    return
+                elif self.arm_side == 'right' and self.place_y > 0.0:
+                    self.get_logger().error(
+                        f'Error de consistencia: Brazo DERECHO seleccionado pero place_y es positivo ({self.place_y:.4f} m). '
+                        'Abortando para evitar trayectoria cruzada.'
+                    )
+                    self.abortar_objeto_actual('Error de consistencia: Brazo DERECHO seleccionado pero place_y es positivo')
+                    return
+
+            self.configurar_brazo_activo(self.arm_side)
+
+            if self.publish_debug_markers:
+                self.publicar_marker(self.object_position, 0, 'objeto', [0.1, 0.8, 0.1, 0.70], 0.045)
+
+            self.ejecutar_fase_1_preparar_escena_y_abrir_mano()
 
     def publicar_marker(
         self,
@@ -729,7 +1294,7 @@ class SingleArmFaceApproachGraspNode(Node):
         if self.last_joint_state is None:
             if self.use_cartesian_local_motions:
                 self.get_logger().error("Abortando: last_joint_state es None pero use_cartesian_local_motions está activo.")
-                rclpy.shutdown()
+                self.abortar_objeto_actual("last_joint_state es None")
             return None
         rs = RobotState()
         rs.joint_state = self.last_joint_state
@@ -860,15 +1425,30 @@ class SingleArmFaceApproachGraspNode(Node):
         phase: int,
         label: str,
         on_success: str,
-        allow_release_contacts: bool = False
-    ) -> None:
+        allow_release_contacts: bool = False,
+        fallback_to_ompl_on_failure: bool = False
+    ) -> bool:
         self.get_logger().info(f'Planificando movimiento cartesiano local para fase {phase}: {label}')
         
+        # 1. Validar que el target no sea inválido o NaN (Fallo estructural)
+        if target_pos is None or target_quat is None or np.isnan(target_pos).any() or np.isnan(target_quat).any():
+            self.get_logger().error(f"[{label}] Abortando: target inválido o NaN en movimiento cartesiano.")
+            self.abortar_objeto_actual(f"[{label}] target inválido o NaN en movimiento cartesiano")
+            return False
+
+        # 2. Validar last_joint_state (Fallo estructural)
         if self.last_joint_state is None:
             self.get_logger().error("Abortando: last_joint_state es None al intentar movimiento cartesiano.")
-            rclpy.shutdown()
-            return
+            self.abortar_objeto_actual("last_joint_state es None al intentar movimiento cartesiano")
+            return False
+
+        # 3. Validar disponibilidad del servicio /compute_cartesian_path (Fallo estructural)
+        if not self.cartesian_path_client.service_is_ready():
+            self.get_logger().error("Abortando: servicio /compute_cartesian_path no disponible.")
+            self.abortar_objeto_actual("servicio /compute_cartesian_path no disponible")
+            return False
             
+        # 4. Validar estado actual antes del movimiento si está activo (Fallo estructural)
         if self.enable_state_validity_diagnostics:
             if allow_release_contacts:
                 valid_curr = self.verificar_estado_actual_permitiendo_contactos_liberacion(f"antes de movimiento cartesiano local: {label}")
@@ -877,31 +1457,30 @@ class SingleArmFaceApproachGraspNode(Node):
                 
             if self.abort_on_invalid_state_before_motion and not valid_curr:
                 self.get_logger().error(f"Abortando: estado actual inválido antes de {label}.")
-                rclpy.shutdown()
-                return
+                self.abortar_objeto_actual(f"estado actual inválido antes de {label}")
+                return False
 
-        # Obtener pose actual del TCP y alinear quaternion para evitar wrist flips
+        # 5. Obtener pose actual del TCP y verificar error de TF (Fallo estructural)
         pose_actual = self.obtener_pose_tcp_actual()
+        if pose_actual is None:
+            self.get_logger().error(f"[{label}] Abortando: error de TF al obtener la pose actual del TCP.")
+            self.abortar_objeto_actual(f"[{label}] error de TF al obtener la pose actual del TCP")
+            return False
+
+        # Alinear quaternion para evitar wrist flips
         target_quat_aligned = np.asarray(target_quat, dtype=float)
         
         q_target_orig = target_quat_aligned.copy()
-        q_actual_tcp = None
-        dot_before = 0.0
-        dot_after = 0.0
-
-        if pose_actual is not None:
-            q_actual_tcp = np.array([
-                pose_actual.orientation.x,
-                pose_actual.orientation.y,
-                pose_actual.orientation.z,
-                pose_actual.orientation.w
-            ], dtype=float)
-            q_actual_tcp = self.normalizar_quat(q_actual_tcp)
-            dot_before = np.dot(self.normalizar_quat(target_quat_aligned), q_actual_tcp)
-            target_quat_aligned = self.alinear_signo_quat_con_referencia(target_quat_aligned, q_actual_tcp)
-            dot_after = np.dot(target_quat_aligned, q_actual_tcp)
-        else:
-            self.get_logger().warning("No se pudo obtener la pose actual del TCP. Se usará el quaternion objetivo original.")
+        q_actual_tcp = np.array([
+            pose_actual.orientation.x,
+            pose_actual.orientation.y,
+            pose_actual.orientation.z,
+            pose_actual.orientation.w
+        ], dtype=float)
+        q_actual_tcp = self.normalizar_quat(q_actual_tcp)
+        dot_before = np.dot(self.normalizar_quat(target_quat_aligned), q_actual_tcp)
+        target_quat_aligned = self.alinear_signo_quat_con_referencia(target_quat_aligned, q_actual_tcp)
+        dot_after = np.dot(target_quat_aligned, q_actual_tcp)
 
         # Construir waypoint Pose
         target_pose = Pose()
@@ -912,6 +1491,10 @@ class SingleArmFaceApproachGraspNode(Node):
         target_pose.orientation.y = float(target_quat_aligned[1])
         target_pose.orientation.z = float(target_quat_aligned[2])
         target_pose.orientation.w = float(target_quat_aligned[3])
+
+        if phase == 4:
+            self.diagnosticar_cartesiano_fase4(target_pose, label)
+            self.diagnosticar_colisiones_trayectoria_fase4(target_pose, label)
 
         req = GetCartesianPath.Request()
         req.header.frame_id = self.base_frame
@@ -931,9 +1514,29 @@ class SingleArmFaceApproachGraspNode(Node):
         try:
             response = self.cartesian_path_client.call(req)
             if response is None:
-                self.get_logger().error(f'[{label}] compute_cartesian_path retornó respuesta None.')
-                rclpy.shutdown()
-                return
+                self.get_logger().error(f'[{label}] Abortando: compute_cartesian_path retornó respuesta None (servicio no disponible).')
+                self.abortar_objeto_actual("compute_cartesian_path retornó respuesta None")
+                return False
+
+            if phase == 4:
+                pose_actual = self.obtener_pose_tcp_actual()
+                tcp_actual_pos = None
+                if pose_actual is not None:
+                    tcp_actual_pos, _ = self.pose_to_np(pose_actual)
+
+                dist_total = float(np.linalg.norm(target_pos - tcp_actual_pos)) if tcp_actual_pos is not None else -1.0
+                dist_planificada_estimada = dist_total * float(response.fraction) if dist_total >= 0.0 else -1.0
+                dist_restante_estimada = dist_total * (1.0 - float(response.fraction)) if dist_total >= 0.0 else -1.0
+
+                self.get_logger().warn(
+                    "[CORTE CARTESIANO FASE 4]\n"
+                    f"  fraction: {response.fraction:.4f}\n"
+                    f"  distancia total solicitada: {dist_total:.4f} m\n"
+                    f"  distancia planificada estimada: {dist_planificada_estimada:.4f} m\n"
+                    f"  distancia restante estimada: {dist_restante_estimada:.4f} m\n"
+                    f"  target_pos: {target_pos.tolist()}\n"
+                    f"  tcp_actual_pos: {tcp_actual_pos.tolist() if tcp_actual_pos is not None else 'N/A'}"
+                )
                 
             fraction = response.fraction
             err_code = response.error_code.val
@@ -950,26 +1553,36 @@ class SingleArmFaceApproachGraspNode(Node):
                     first_pos = [round(v, 4) for v in points[0].positions]
                     last_pos = [round(v, 4) for v in points[-1].positions]
 
+            min_frac = self.min_cartesian_fraction
+            if self.manipulation_geometry_mode == 'shelf' and phase in (4, 7):
+                min_frac = self.shelf_min_cartesian_fraction
+            elif self.obtener_place_geometry_mode_efectivo() == 'shelf' and phase in (9, 12):
+                min_frac = self.shelf_min_cartesian_fraction
+
             self.get_logger().info(
                 f'[{label}] Fracción: {fraction:.4f} | Código Error: {err_code} | Objetivo: {target_pos.tolist()}\n'
                 f'  Fase: {phase} | Lado: {self.cfg.side} | Etapa: {self.transfer_stage}\n'
-                f'  cartesian_max_step: {self.cartesian_max_step} | cartesian_jump_threshold: {self.cartesian_jump_threshold} | min_cartesian_fraction: {self.min_cartesian_fraction:.4f}\n'
+                f'  cartesian_max_step: {self.cartesian_max_step} | cartesian_jump_threshold: {self.cartesian_jump_threshold} | min_cartesian_fraction_enforced: {min_frac:.4f}\n'
                 f'  Puntos en trayectoria: {num_points}\n'
                 f'  Primera posición articular: {first_pos}\n'
                 f'  Última posición articular: {last_pos}'
             )
             
-            if fraction < self.min_cartesian_fraction:
+            if fraction < min_frac:
                 self.get_logger().error(
-                    f'[{label}] Fracción cartesiana planificada ({fraction:.4f}) menor que la mínima requerida ({self.min_cartesian_fraction:.4f}). Abortando...'
+                    f'[{label}] Fracción cartesiana planificada ({fraction:.4f}) menor que la mínima requerida ({min_frac:.4f}).'
                 )
-                rclpy.shutdown()
-                return
+                if fallback_to_ompl_on_failure:
+                    return False
+                self.abortar_objeto_actual("Fracción cartesiana menor que la mínima requerida")
+                return False
                 
             if err_code != 1:  # MoveItErrorCodes.SUCCESS = 1
-                self.get_logger().error(f'[{label}] Fallo en planificación de trayectoria cartesiana. Código: {err_code}. Abortando...')
-                rclpy.shutdown()
-                return
+                self.get_logger().error(f'[{label}] Fallo en planificación de trayectoria cartesiana. Código: {err_code}.')
+                if fallback_to_ompl_on_failure:
+                    return False
+                self.abortar_objeto_actual(f"Fallo en planificación de trayectoria cartesiana. Código: {err_code}")
+                return False
 
             # Calcular max joint delta total y el joint correspondiente
             max_delta_total = 0.0
@@ -988,11 +1601,8 @@ class SingleArmFaceApproachGraspNode(Node):
 
             if phase == 4:
                 # distancia cartesiana objetivo
-                tcp_actual_pos = None
-                if pose_actual is not None:
-                    tcp_actual_pos, _ = self.pose_to_np(pose_actual)
-                dist_obj = np.linalg.norm(target_pos - tcp_actual_pos) if tcp_actual_pos is not None else np.linalg.norm(target_pos - self.tcp_ready)
-                q_act_list = q_actual_tcp.tolist() if q_actual_tcp is not None else "N/A"
+                dist_obj = np.linalg.norm(target_pos - tcp_actual_pos)
+                q_act_list = q_actual_tcp.tolist()
                 self.get_logger().info(
                     f"[DIAGNÓSTICO FASE 4 - EJECUCIÓN CARTESIANA]\n"
                     f"  Distancia cartesiana objetivo: {dist_obj:.4f} m\n"
@@ -1007,9 +1617,11 @@ class SingleArmFaceApproachGraspNode(Node):
 
             if self.cartesian_joint_jump_guard_enabled:
                 if not self.validar_suavidad_trayectoria_cartesiana(response.solution, phase, label):
-                    # validar_suavidad_trayectoria_cartesiana ya imprimió el log de error
-                    rclpy.shutdown()
-                    return
+                    self.get_logger().error(f"[{label}] Salto articular detectado por jump guard.")
+                    if fallback_to_ompl_on_failure:
+                        return False
+                    self.abortar_objeto_actual("Salto articular detectado por jump guard")
+                    return False
                 
             # Guardar contexto
             self.current_phase = phase
@@ -1019,29 +1631,375 @@ class SingleArmFaceApproachGraspNode(Node):
             # Ejecutar trayectoria con ExecuteTrajectory action
             if not self.execute_trajectory_client.wait_for_server(timeout_sec=5.0):
                 self.get_logger().error('Servidor de acción /execute_trajectory no disponible.')
-                rclpy.shutdown()
-                return
+                self.abortar_objeto_actual("Servidor de acción /execute_trajectory no disponible")
+                return False
                 
             goal_msg = ExecuteTrajectory.Goal()
             goal_msg.trajectory = response.solution
             
             future = self.execute_trajectory_client.send_goal_async(goal_msg)
             future.add_done_callback(self.cartesian_execute_goal_response_callback)
+            return True
             
         except Exception as e:
-            self.get_logger().error(f'[{label}] Excepción en compute_cartesian_path: {str(e)}')
-            rclpy.shutdown()
+            self.get_logger().error(f'[{label}] Abortando: Excepción en compute_cartesian_path: {str(e)}')
+            self.abortar_objeto_actual(f"Excepción en compute_cartesian_path: {str(e)}")
+            return False
 
     def cartesian_execute_goal_response_callback(self, future) -> None:
         goal_handle = future.result()
         if not goal_handle.accepted:
             self.get_logger().error(f'Ejecución de trayectoria cartesiana para {self.cartesian_motion_label} rechazada.')
-            rclpy.shutdown()
+            self.abortar_objeto_actual("Ejecución de trayectoria cartesiana rechazada")
             return
             
         self.get_logger().info(f'Ejecución cartesiana para {self.cartesian_motion_label} aceptada. Monitoreando...')
         result_future = goal_handle.get_result_async()
         result_future.add_done_callback(self.cartesian_execute_result_callback)
+
+    def ejecutar_movimiento_local_con_fallback_ompl(
+        self,
+        target_pos: np.ndarray,
+        target_quat: np.ndarray,
+        phase: int,
+        label: str,
+        on_success: str,
+        motion_mode: str,
+        allow_release_contacts: bool = False
+    ) -> None:
+        """
+        Helper para ejecutar movimientos locales con opción de fallback selectivo a OMPL.
+        """
+        self.get_logger().info(
+            f"[FALLBACK LOGIC] Iniciando movimiento local con modo '{motion_mode}': {label} (Fase {phase})"
+        )
+
+        if motion_mode == 'cartesian':
+            # Ejecutar cartesiano puro, sin fallback. Si falla, aborta internamente (debido a fallback_to_ompl_on_failure=False)
+            self.ejecutar_movimiento_cartesiano_local(
+                target_pos=target_pos,
+                target_quat=target_quat,
+                phase=phase,
+                label=label,
+                on_success=on_success,
+                allow_release_contacts=allow_release_contacts,
+                fallback_to_ompl_on_failure=False
+            )
+            
+        elif motion_mode == 'ompl':
+            # OMPL directo
+            self.get_logger().info(f"[FALLBACK LOGIC] Planificación OMPL directa solicitada para {label}.")
+            if phase == 9 and on_success == "phase9_shelf_insert_lifted_done" and self.obtener_place_geometry_mode_efectivo() == "shelf":
+                self.pending_phase9_shelf_insert_lifted_motion = True
+            if phase == 12 and on_success == "phase12_retreat_done" and self.obtener_place_geometry_mode_efectivo() == "shelf":
+                self.pending_phase12_shelf_retreat_motion = True
+                
+            self.planificar_a_pose(
+                pos=target_pos,
+                quat=target_quat,
+                phase=phase,
+                label=label
+            )
+            
+        elif motion_mode == 'auto':
+            # Intentar cartesiano con fallback_to_ompl_on_failure=True
+            success_cart = self.ejecutar_movimiento_cartesiano_local(
+                target_pos=target_pos,
+                target_quat=target_quat,
+                phase=phase,
+                label=label,
+                on_success=on_success,
+                allow_release_contacts=allow_release_contacts,
+                fallback_to_ompl_on_failure=True
+            )
+            
+            if not success_cart:
+                if not rclpy.ok():
+                    # El nodo está apagándose debido a un fallo estructural
+                    return
+                if self.enable_object_queue and (self.active_queued_object is None or self.active_queued_object.failed or self.active_queued_object.final_status != "pending"):
+                    # Abortado estructuralmente por abortar_objeto_actual
+                    return
+                # OMPL Fallback
+                self.ompl_fallback_count += 1
+                self.get_logger().warn(
+                    f"[CARTESIAN FALLBACK] Planificación cartesiana falló para '{label}'. "
+                    "Iniciando fallback a OMPL..."
+                )
+                self.get_logger().info(
+                    f"[CARTESIAN FALLBACK] OMPL usará el mismo target cartesiano fallido."
+                )
+                
+                if phase == 9 and on_success == "phase9_shelf_insert_lifted_done" and self.obtener_place_geometry_mode_efectivo() == "shelf":
+                    self.pending_phase9_shelf_insert_lifted_motion = True
+                if phase == 12 and on_success == "phase12_retreat_done" and self.obtener_place_geometry_mode_efectivo() == "shelf":
+                    self.pending_phase12_shelf_retreat_motion = True
+                    
+                self.planificar_a_pose(
+                    pos=target_pos,
+                    quat=target_quat,
+                    phase=phase,
+                    label=f"{label} (OMPL Fallback)"
+                )
+        else:
+            self.get_logger().error(f"Modo de movimiento desconocido: '{motion_mode}'. Abortando...")
+            self.abortar_objeto_actual(f"Modo de movimiento desconocido: '{motion_mode}'")
+
+    def limpiar_colisiones_attached_por_abort(self) -> None:
+        """Remueve los objetos attached de la escena de planificación tras un abort de ciclo."""
+        self.get_logger().info('[OBJECT QUEUE] Limpiando colisiones attached por abort de objeto anterior...')
+        aco_manipulado_remove = AttachedCollisionObject()
+        aco_manipulado_remove.link_name = self.cfg.ee_link
+        aco_manipulado_remove.object.id = 'objeto_manipulado'
+        aco_manipulado_remove.object.operation = CollisionObject.REMOVE
+
+        aco_interno_remove = AttachedCollisionObject()
+        aco_interno_remove.link_name = self.cfg.ee_link
+        aco_interno_remove.object.id = 'objeto_interno_colision'
+        aco_interno_remove.object.operation = CollisionObject.REMOVE
+
+        self.aplicar_planning_scene(
+            attached_collision_objects=[aco_manipulado_remove, aco_interno_remove],
+            is_diff=True,
+            label='abort_detach'
+        )
+
+    def abortar_objeto_actual(self, motivo: str) -> None:
+        """Centraliza la cancelación del objeto actual de la cola."""
+        if self.enable_object_queue and self.active_queued_object is not None:
+            self.get_logger().error(
+                f"[OBJECT QUEUE] Fallo crítico con objeto '{self.active_queued_object.frame}': {motivo}"
+            )
+            self.active_queued_object.failed = True
+            self.active_queued_object.final_status = "failed"
+            
+            if self.queue_continue_on_object_failure:
+                self.get_logger().warn(
+                    "[OBJECT QUEUE] queue_continue_on_object_failure es True. "
+                    "Marcando objeto como fallido y procediendo con el siguiente de la cola."
+                )
+                self.limpiar_colisiones_attached_por_abort()
+                self.iniciar_siguiente_objeto_de_cola()
+            else:
+                self.get_logger().error(
+                    "[OBJECT QUEUE] queue_continue_on_object_failure es False. Abortando ejecución de la cola."
+                )
+                self.finalizar_cola_de_objetos()
+        else:
+            self.get_logger().error(f"Fallo crítico sin cola activa: {motivo}. Abortando...")
+            rclpy.shutdown()
+
+    def registrar_objetos_pasivos_como_obstaculos(self) -> None:
+        """Registra los demás objetos de la cola (no activos, no fallados) como obstáculos pasivos en MoveIt."""
+        if not self.enable_object_queue:
+            return
+            
+        collision_objects = []
+        for obj in self.object_queue:
+            # Omitir el objeto activo
+            if self.active_queued_object is not None and obj.frame == self.active_queued_object.frame:
+                continue
+            # Omitir objetos no disponibles o fallados
+            if not obj.available or obj.final_status == "failed":
+                continue
+                
+            # Si el objeto ya fue procesado, verificar si deseamos mantenerlo como obstáculo
+            is_processed = (obj.final_status == "processed")
+            if is_processed and not self.queue_keep_processed_objects_as_obstacles:
+                continue
+                
+            # Construir primitiva del obstáculo
+            primitive = SolidPrimitive()
+            dim = obj.dimension
+            if obj.object_type == 'cube':
+                primitive.type = SolidPrimitive.BOX
+                primitive.dimensions = [dim, dim, dim]
+            else:
+                primitive.type = SolidPrimitive.SPHERE
+                primitive.dimensions = [dim / 2.0]
+                
+            # Construir pose del obstáculo
+            pose = Pose()
+            if is_processed:
+                pose.position.x = float(obj.final_position[0])
+                pose.position.y = float(obj.final_position[1])
+                pose.position.z = float(obj.final_position[2])
+                if obj.object_type == 'cube':
+                    quat = R.from_euler('xyz', [0.0, 0.0, obj.final_yaw_rad], degrees=False).as_quat()
+                else:
+                    quat = np.array([0.0, 0.0, 0.0, 1.0], dtype=float)
+            else:
+                pose.position.x = float(obj.corrected_position[0])
+                pose.position.y = float(obj.corrected_position[1])
+                pose.position.z = float(obj.corrected_position[2])
+                if obj.object_type == 'cube':
+                    quat = R.from_euler('xyz', [0.0, 0.0, obj.functional_yaw_rad], degrees=False).as_quat()
+                else:
+                    quat = np.array([0.0, 0.0, 0.0, 1.0], dtype=float)
+                
+            pose.orientation.x = float(quat[0])
+            pose.orientation.y = float(quat[1])
+            pose.orientation.z = float(quat[2])
+            pose.orientation.w = float(quat[3])
+            
+            co = CollisionObject()
+            co.header.frame_id = self.base_frame
+            co.id = f"queue_processed_obstacle_{obj.frame}" if is_processed else f"queue_obstacle_{obj.frame}"
+            co.operation = CollisionObject.ADD
+            co.primitives.append(primitive)
+            co.primitive_poses.append(pose)
+            
+            collision_objects.append(co)
+            
+        if len(collision_objects) > 0:
+            success = self.aplicar_planning_scene(
+                collision_objects=collision_objects,
+                is_diff=True,
+                label='registrar_objetos_pasivos_como_obstaculos'
+            )
+            if success:
+                self.get_logger().info(f"[OBJECT QUEUE] Registrados {len(collision_objects)} objetos pasivos en la PlanningScene.")
+            else:
+                self.get_logger().error("[OBJECT QUEUE] Fallo al registrar objetos pasivos.")
+
+    def iniciar_siguiente_objeto_de_cola(self) -> None:
+        """Busca el siguiente objeto de la cola y re-inicializa el estado del ciclo para procesarlo."""
+        next_obj = None
+        for obj in self.object_queue:
+            if obj.final_status == "pending" and obj.available:
+                next_obj = obj
+                break
+                
+        if next_obj is None:
+            self.finalizar_cola_de_objetos()
+            return
+
+        self.active_queued_object = next_obj
+        self.executed_order_frames.append(next_obj.frame)
+        
+        self.get_logger().info(
+            f"\n=======================================================\n"
+            f"[OBJECT QUEUE] Iniciando procesamiento del objeto: {next_obj.frame}\n"
+            f"  Tipo: {next_obj.object_type} | Dimensión: {next_obj.dimension} m | Prioridad: {next_obj.priority}\n"
+            f"======================================================="
+        )
+
+        # Cargar parámetros del objeto activo
+        self.object_frame = next_obj.frame
+        self.object_type = next_obj.object_type
+        self.object_dimension = next_obj.dimension
+        self.object_position = np.copy(next_obj.initial_position)
+        self.object_yaw_rad = next_obj.initial_yaw_rad
+        
+        # Calcular cuaternión del objeto a partir de su yaw
+        self.object_quat_xyzw = np.array([0.0, 0.0, math.sin(self.object_yaw_rad/2.0), math.cos(self.object_yaw_rad/2.0)], dtype=float)
+
+        self.raw_object_position = np.copy(self.object_position)
+        self.initial_object_position = np.copy(self.object_position)
+        self.initial_object_yaw_rad = self.object_yaw_rad
+
+        # Resetear todos los estados internos de ciclo
+        self.current_phase = 0
+        self.transfer_stage = 'source_to_table'
+        self.retreat_done = False
+        self.hand_open_confirmed = False
+        self.shelf_lift_before_retreat_done = False
+        self.pending_phase7_lift_motion = False
+        self.shelf_place_insert_lifted_done = False
+        self.shelf_place_lowering_done = False
+        self.pending_phase9_shelf_insert_lifted_motion = False
+        self.pending_phase12_shelf_retreat_motion = False
+        self.last_valid_table_surface_z = None
+        self.last_aruco_table_position = np.zeros(3, dtype=float)
+        self.last_table_destination = np.zeros(3, dtype=float)
+        
+        self.tcp_quat = np.array([0.0, 0.0, 0.0, 1.0], dtype=float)
+        self.tcp_pregrasp = np.zeros(3, dtype=float)
+        self.tcp_ready = np.zeros(3, dtype=float)
+        self.tcp_contact = np.zeros(3, dtype=float)
+        self.tcp_post_grasp_lift = np.zeros(3, dtype=float)
+        self.tcp_pregrasp_lifted = np.zeros(3, dtype=float)
+        self.tcp_place_lifted = np.zeros(3, dtype=float)
+        self.place_object_center = np.zeros(3, dtype=float)
+        self.tcp_place_above = np.zeros(3, dtype=float)
+        self.tcp_place = np.zeros(3, dtype=float)
+        self.tcp_quat_place = np.array([0.0, 0.0, 0.0, 1.0], dtype=float)
+        self.tcp_place_retreat = np.zeros(3, dtype=float)
+
+        # Configurar brazo inicial según coordenada Y del objeto
+        if self.task_mode == 'bimanual_transfer':
+            if self.object_position[1] >= 0.0:
+                self.initial_arm_side = 'left'
+                self.second_arm_side = 'right'
+            else:
+                self.initial_arm_side = 'right'
+                self.second_arm_side = 'left'
+            self.arm_side = self.initial_arm_side
+            self.get_logger().info(f'[OBJECT QUEUE] Primer brazo configurado según Y: {self.initial_arm_side.upper()}')
+            
+            # Re-calcular targets de mesa y final
+            dest_mesa = self.calcular_destino_mesa()
+            self.get_logger().info(f'[OBJECT QUEUE] Destino de mesa calculado: {dest_mesa.tolist()}')
+            dest_final = self.calcular_destino_final_espejado()
+            self.get_logger().info(f'[OBJECT QUEUE] Destino final espejado calculado: {dest_final.tolist()}')
+        else:
+            if self.object_position[1] >= 0.0:
+                self.arm_side = 'left'
+            else:
+                self.arm_side = 'right'
+            self.get_logger().info(f'[OBJECT QUEUE] Brazo único configurado según Y: {self.arm_side.upper()}')
+
+        next_obj.initial_arm = self.initial_arm_side if self.task_mode == 'bimanual_transfer' else self.arm_side
+        self.configurar_brazo_activo(self.arm_side)
+        
+        # Descriptor de tarea del nuevo objeto activo
+        self.log_task_descriptor_actual()
+
+        # Publicar marcadores de depuración iniciales
+        if self.publish_debug_markers:
+            self.publicar_marker(self.object_position, 0, 'objeto', [0.1, 0.8, 0.1, 0.70], 0.045)
+
+        self.ejecutar_fase_1_preparar_escena_y_abrir_mano()
+
+    def finalizar_cola_de_objetos(self) -> None:
+        """Muestra reporte final consolidado de la cola y apaga ROS."""
+        total = self.initial_queue_len
+        processed = sum(1 for o in self.object_queue if o.processed)
+        failed = sum(1 for o in self.object_queue if o.failed)
+        skipped = sum(1 for o in self.object_queue if o.final_status == "pending" or (not o.processed and not o.failed))
+        
+        planned_order_str = ", ".join(self.planned_order_frames)
+        executed_order_str = ", ".join(self.executed_order_frames)
+        
+        duration_sec = 0.0
+        if hasattr(self, 'queue_start_time') and self.queue_start_time is not None:
+            duration = self.get_clock().now() - self.queue_start_time
+            duration_sec = duration.nanoseconds / 1e9
+
+        self.get_logger().info(
+            f"\n=======================================================\n"
+            f"[RESUMEN FINAL DE COLA DE OBJETOS]\n"
+            f"  Objetos totales: {total}\n"
+            f"  Objetos procesados con éxito: {processed}\n"
+            f"  Objetos fallidos: {failed}\n"
+            f"  Objetos omitidos: {skipped}\n"
+            f"  Orden planificado: [{planned_order_str}]\n"
+            f"  Orden ejecutado: [{executed_order_str}]\n"
+            f"  Duración total de ejecución: {duration_sec:.2f} s\n"
+            f"  Número de usos de fallback OMPL: {self.ompl_fallback_count}\n"
+            f"-------------------------------------------------------\n"
+            f"Detalles por objeto:\n"
+        )
+        
+        for idx, obj in enumerate(self.object_queue):
+            arm_str = getattr(obj, 'initial_arm', 'N/A')
+            self.get_logger().info(
+                f"  [{idx}] Frame: {obj.frame} | Tipo: {obj.object_type} | "
+                f"Brazo inicial: {arm_str} | Estado final: {obj.final_status}"
+            )
+            
+        self.get_logger().info("=======================================================")
+        rclpy.shutdown()
 
     def cartesian_execute_result_callback(self, future) -> None:
         result = future.result().result
@@ -1050,6 +2008,94 @@ class SingleArmFaceApproachGraspNode(Node):
             
             if self.cartesian_motion_context == "phase4_done":
                 self.ejecutar_siguiente_fase()
+            elif self.cartesian_motion_context == "phase7_lift_done":
+                self.shelf_lift_before_retreat_done = True
+                pose_actual = self.obtener_pose_tcp_actual()
+                if pose_actual is not None:
+                    tcp_actual_pos, _ = self.pose_to_np(pose_actual)
+                    pos_error = float(np.linalg.norm(tcp_actual_pos - self.tcp_post_grasp_lift))
+                    self.get_logger().info(
+                        f"[SHELF SAFE EXTRACTION] Micro-lift cartesiano completado.\n"
+                        f"  tcp_actual_post_lift: {tcp_actual_pos.tolist()}\n"
+                        f"  tcp_post_grasp_lift esperado: {self.tcp_post_grasp_lift.tolist()}\n"
+                        f"  error posicional: {pos_error:.4f} m"
+                    )
+                else:
+                    self.get_logger().warn("[SHELF SAFE EXTRACTION] Micro-lift cartesiano completado, pero no se pudo obtener la pose actual del TCP.")
+                self.ejecutar_fase_7_retirada_vertical()
+                return
+            elif self.cartesian_motion_context == "phase7_done":
+                self.ejecutar_siguiente_fase()
+            elif self.cartesian_motion_context == "phase9_shelf_insert_lifted_done":
+                self.shelf_place_insert_lifted_done = True
+                pose_actual = self.obtener_pose_tcp_actual()
+                tcp_actual_pos = None
+                if pose_actual is not None:
+                    tcp_actual_pos, _ = self.pose_to_np(pose_actual)
+                    pos_error = float(np.linalg.norm(tcp_actual_pos - self.tcp_place_lifted))
+                    self.get_logger().info(
+                        f"[SHELF SAFE PLACE] Inserción horizontal elevada completada.\n"
+                        f"  tcp_actual: {tcp_actual_pos.tolist()}\n"
+                        f"  tcp_place_lifted esperado: {self.tcp_place_lifted.tolist()}\n"
+                        f"  error posicional: {pos_error:.4f} m"
+                    )
+                else:
+                    self.get_logger().warn("[SHELF SAFE PLACE] Inserción horizontal elevada completada, pero no se pudo obtener la pose actual del TCP.")
+
+                # Calcular distancias y vector
+                v_expected = self.tcp_place - self.tcp_place_lifted
+                dist_expected = float(np.linalg.norm(v_expected))
+                
+                dist_real = 0.0
+                v_real = np.zeros(3)
+                v_real_norm = np.array([0.0, 0.0, -1.0])
+                if tcp_actual_pos is not None:
+                    v_real = self.tcp_place - tcp_actual_pos
+                    dist_real = float(np.linalg.norm(v_real))
+                    if dist_real > 1e-6:
+                        v_real_norm = v_real / dist_real
+                else:
+                    dist_real = dist_expected
+                    if dist_expected > 1e-6:
+                        v_real_norm = v_expected / dist_expected
+
+                place_mode_eff = self.obtener_place_geometry_mode_efectivo()
+                self.get_logger().info(
+                    "[SHELF SAFE PLACE] Ejecutando descenso vertical corto hacia tcp_place:\n"
+                    f"  tcp_place_lifted: {self.tcp_place_lifted.tolist()}\n"
+                    f"  tcp_place: {self.tcp_place.tolist()}\n"
+                    f"  distancia esperada: {dist_expected:.4f} m\n"
+                    f"  distancia real: {dist_real:.4f} m\n"
+                    f"  vector de descenso normalizado: {v_real_norm.tolist()}"
+                )
+
+                if self.publish_debug_markers:
+                    self.publicar_marker(self.tcp_place_lifted, 42, 'tcp_place_lifted', [1.0, 0.5, 0.5, 0.8], quat=self.tcp_quat_place, escala=0.030)
+
+                self.ejecutar_movimiento_cartesiano_local(
+                    target_pos=self.tcp_place,
+                    target_quat=self.tcp_quat_place,
+                    phase=9,
+                    label="descenso vertical corto para depositar objeto en estante",
+                    on_success="phase9_shelf_lowering_done"
+                )
+                return
+            elif self.cartesian_motion_context == "phase9_shelf_lowering_done":
+                self.shelf_place_lowering_done = True
+                pose_actual = self.obtener_pose_tcp_actual()
+                if pose_actual is not None:
+                    tcp_actual_pos, _ = self.pose_to_np(pose_actual)
+                    pos_error = float(np.linalg.norm(tcp_actual_pos - self.tcp_place))
+                    self.get_logger().info(
+                        f"[SHELF SAFE PLACE] Descenso vertical completado.\n"
+                        f"  tcp_actual: {tcp_actual_pos.tolist()}\n"
+                        f"  tcp_place esperado: {self.tcp_place.tolist()}\n"
+                        f"  error posicional: {pos_error:.4f} m"
+                    )
+                else:
+                    self.get_logger().warn("[SHELF SAFE PLACE] Descenso vertical completado, pero no se pudo obtener la pose actual del TCP.")
+                self.ejecutar_siguiente_fase()
+                return
             elif self.cartesian_motion_context == "phase9_done":
                 self.ejecutar_siguiente_fase()
             elif self.cartesian_motion_context == "phase12_retreat_done":
@@ -1057,12 +2103,12 @@ class SingleArmFaceApproachGraspNode(Node):
                 self.ejecutar_fase_12_retirada_segura()
             else:
                 self.get_logger().error(f'Contexto cartesiano desconocido: {self.cartesian_motion_context}. Abortando...')
-                rclpy.shutdown()
+                self.abortar_objeto_actual(f"Contexto cartesiano desconocido: {self.cartesian_motion_context}")
         else:
             self.get_logger().error(
                 f'Error en la ejecución de la trayectoria cartesiana para {self.cartesian_motion_label} (Fase {self.current_phase}). Código: {result.error_code.val}. Abortando...'
             )
-            rclpy.shutdown()
+            self.abortar_objeto_actual(f"Error en la ejecución de la trayectoria cartesiana para {self.cartesian_motion_label}")
 
     def aplicar_planning_scene(
         self,
@@ -1237,6 +2283,154 @@ class SingleArmFaceApproachGraspNode(Node):
 
         return True
 
+    def diagnosticar_convencion_tcp_fase4(self) -> None:
+        x_tcp = np.asarray(self.approach_dir_world, dtype=float)
+        x_tcp = x_tcp / max(np.linalg.norm(x_tcp), 1e-9)
+
+        v_contact_to_object = self.object_position - self.tcp_contact
+        v_ready_to_contact = self.tcp_contact - self.tcp_ready
+
+        u_contact_to_object = v_contact_to_object / max(np.linalg.norm(v_contact_to_object), 1e-9)
+        u_ready_to_contact = v_ready_to_contact / max(np.linalg.norm(v_ready_to_contact), 1e-9)
+
+        dot_obj = float(np.dot(u_contact_to_object, x_tcp))
+        dot_motion = float(np.dot(u_ready_to_contact, x_tcp))
+
+        self.get_logger().info(
+            "[CHECK CONVENCIÓN TCP FASE 4]\n"
+            f"  object_position: {self.object_position.tolist()}\n"
+            f"  tcp_contact: {self.tcp_contact.tolist()}\n"
+            f"  tcp_ready: {self.tcp_ready.tolist()}\n"
+            f"  +X_TCP_world / approach_dir_world: {x_tcp.tolist()}\n"
+            f"  vector contact->object: {v_contact_to_object.tolist()}\n"
+            f"  vector ready->contact: {v_ready_to_contact.tolist()}\n"
+            f"  dot(contact->object, +X_TCP): {dot_obj:.4f} | esperado ≈ -1.0000\n"
+            f"  dot(ready->contact, +X_TCP): {dot_motion:.4f} | esperado ≈ -1.0000"
+        )
+
+    def diagnosticar_cartesiano_fase4(self, target_pose: Pose, label: str) -> None:
+        tests = [
+            ("A_collision_ON_jump_ON", True, self.cartesian_jump_threshold),
+            ("B_collision_OFF_jump_ON", False, self.cartesian_jump_threshold),
+            ("C_collision_OFF_jump_OFF", False, 0.0),
+        ]
+
+        for test_name, avoid_collisions, jump_threshold in tests:
+            req = GetCartesianPath.Request()
+            req.header.frame_id = self.base_frame
+            req.header.stamp = self.get_clock().now().to_msg()
+
+            start_state = self.construir_robot_state_actual()
+            if start_state is not None:
+                req.start_state = start_state
+
+            req.group_name = self.cfg.arm_group
+            req.link_name = self.cfg.ee_link
+            req.waypoints = [target_pose]
+            req.max_step = self.cartesian_max_step
+            req.jump_threshold = jump_threshold
+            req.avoid_collisions = avoid_collisions
+
+            res = self.cartesian_path_client.call(req)
+            if res is None:
+                self.get_logger().error(f"[DIAG CARTESIANO FASE 4] {test_name} -> response None")
+                continue
+
+            n_points = 0
+            if res.solution and res.solution.joint_trajectory:
+                n_points = len(res.solution.joint_trajectory.points)
+
+            self.get_logger().warn(
+                f"[DIAG CARTESIANO FASE 4] {test_name} | "
+                f"avoid_collisions={avoid_collisions} | "
+                f"jump_threshold={jump_threshold} | "
+                f"fraction={res.fraction:.4f} | "
+                f"error_code={res.error_code.val} | "
+                f"points={n_points}"
+            )
+
+    def diagnosticar_colisiones_trayectoria_fase4(self, target_pose: Pose, label: str) -> None:
+        req = GetCartesianPath.Request()
+        req.header.frame_id = self.base_frame
+        req.header.stamp = self.get_clock().now().to_msg()
+
+        start_state = self.construir_robot_state_actual()
+        if start_state is not None:
+            req.start_state = start_state
+
+        req.group_name = self.cfg.arm_group
+        req.link_name = self.cfg.ee_link
+        req.waypoints = [target_pose]
+        req.max_step = self.cartesian_max_step
+        req.jump_threshold = 0.0
+        req.avoid_collisions = False
+
+        res = self.cartesian_path_client.call(req)
+        if res is None or res.solution is None or res.solution.joint_trajectory is None:
+            self.get_logger().error("[DIAG COLISION FASE 4] No se pudo generar trayectoria completa sin colisiones.")
+            return
+
+        traj = res.solution.joint_trajectory
+        if not traj.points:
+            self.get_logger().error("[DIAG COLISION FASE 4] Trayectoria sin puntos.")
+            return
+
+        if self.last_joint_state is None:
+            self.get_logger().error("[DIAG COLISION FASE 4] last_joint_state es None.")
+            return
+
+        base_names = list(self.last_joint_state.name)
+        base_pos = list(self.last_joint_state.position)
+        name_to_index = {n: i for i, n in enumerate(base_names)}
+
+        self.get_logger().warn(
+            f"[DIAG COLISION FASE 4] Evaluando {len(traj.points)} puntos de trayectoria completa sin colisiones."
+        )
+
+        first_invalid_found = False
+
+        for i, pt in enumerate(traj.points):
+            rs = RobotState()
+            rs.joint_state.name = list(base_names)
+            rs.joint_state.position = list(base_pos)
+
+            for j_name, j_pos in zip(traj.joint_names, pt.positions):
+                if j_name in name_to_index:
+                    rs.joint_state.position[name_to_index[j_name]] = float(j_pos)
+
+            check = GetStateValidity.Request()
+            check.robot_state = rs
+            check.group_name = self.cfg.arm_group
+
+            response = self.state_validity_client.call(check)
+            if response is None:
+                self.get_logger().error(f"[DIAG COLISION FASE 4] check_state_validity None en punto {i}.")
+                continue
+
+            if not response.valid:
+                first_invalid_found = True
+                progress = i / max(len(traj.points) - 1, 1)
+
+                self.get_logger().error(
+                    f"[DIAG COLISION FASE 4] Primer punto inválido detectado:\n"
+                    f"  index: {i}/{len(traj.points)-1}\n"
+                    f"  progreso aproximado: {progress:.4f}\n"
+                    f"  contactos reportados: {len(response.contacts)}"
+                )
+
+                for c in response.contacts:
+                    self.get_logger().error(
+                        f"  CONTACTO: '{c.contact_body_1}' <-> '{c.contact_body_2}'"
+                    )
+
+                break
+
+        if not first_invalid_found:
+            self.get_logger().warn(
+                "[DIAG COLISION FASE 4] Ningún punto inválido encontrado al revalidar la trayectoria completa. "
+                "Esto indica diferencia entre validación directa y validación interna de compute_cartesian_path."
+            )
+
     def obtener_pose_tcp_actual(self) -> Optional[Pose]:
         try:
             transform = self.tf_buffer.lookup_transform(
@@ -1370,8 +2564,20 @@ class SingleArmFaceApproachGraspNode(Node):
         aco_interno.object.id = 'objeto_interno_colision'
         aco_interno.object.operation = CollisionObject.REMOVE
 
+        collision_objs = [co_manipulado, co_interno, co_mesa]
+
+        if self.enable_object_queue:
+            frames_list = [f.strip() for f in self.object_queue_frames_str.split(',') if f.strip()]
+            for f in frames_list:
+                for suffix in [f"queue_obstacle_{f}", f"queue_processed_obstacle_{f}"]:
+                    co_obs = CollisionObject()
+                    co_obs.header.frame_id = self.base_frame
+                    co_obs.id = suffix
+                    co_obs.operation = CollisionObject.REMOVE
+                    collision_objs.append(co_obs)
+
         self.aplicar_planning_scene(
-            collision_objects=[co_manipulado, co_interno, co_mesa],
+            collision_objects=collision_objs,
             attached_collision_objects=[aco_manipulado, aco_interno],
             is_diff=True,
             label='limpiar_escena'
@@ -1391,7 +2597,39 @@ class SingleArmFaceApproachGraspNode(Node):
         profundidad_mesa = 0.8
         grosor_mesa = 0.05
         dist_robot_mesa = 0.15
-        z_superficie_mesa = 0.0424
+
+        if self.use_aruco_table_height and not self.use_aruco_table_target:
+            self.get_logger().warn(
+                "[ARUCO HEIGHT COHERENCE] Se está usando el ArUco solo para estimar altura de mesa, no como destino de colocación."
+            )
+
+        if self.use_aruco_table_height:
+            try:
+                aruco_pos, _, _ = self.lookup_frame_pose_in_base(self.table_target_frame)
+                z_superficie_mesa = aruco_pos[2] + self.aruco_table_height_offset
+                self.last_valid_table_surface_z = z_superficie_mesa
+                self.get_logger().info(
+                    f"[DINÁMICO MESA COLLISION] Ajustando altura de mesa al ArUco '{self.table_target_frame}': "
+                    f"Z_aruco={aruco_pos[2]:.4f} m, offset={self.aruco_table_height_offset:.4f} m, "
+                    f"z_superficie_mesa resultante={z_superficie_mesa:.4f} m"
+                )
+            except Exception as e:
+                if self.allow_cached_aruco_table_height and self.last_valid_table_surface_z is not None:
+                    z_superficie_mesa = self.last_valid_table_surface_z
+                    self.get_logger().warn(
+                        f"[MESA HEIGHT CACHE] Lookup falló. Usando altura de mesa cacheada: {z_superficie_mesa:.4f} m"
+                    )
+                else:
+                    self.get_logger().error(
+                        f"[FALLO DINÁMICO MESA COLLISION] No se pudo obtener la pose del ArUco '{self.table_target_frame}' "
+                        f"para ajustar la mesa de colisión: {str(e)}"
+                    )
+                    self.abortar_objeto_actual("No se pudo obtener la pose del ArUco para ajustar la mesa de colisión")
+                    if self.enable_object_queue:
+                        return
+                    raise RuntimeError(f"Fallo al registrar mesa: frame ArUco '{self.table_target_frame}' faltante.") from e
+        else:
+            z_superficie_mesa = 0.0424
 
         mesa = CollisionObject()
         mesa.header.frame_id = self.base_frame
@@ -1432,7 +2670,7 @@ class SingleArmFaceApproachGraspNode(Node):
         )
         if not success:
             self.get_logger().error('Fallo al añadir la mesa por servicio. Abortando...')
-            rclpy.shutdown()
+            self.abortar_objeto_actual("Fallo al añadir la mesa por servicio")
             return
             
         self.get_logger().info('Mesa registrada como geometría de colisión.')
@@ -1504,14 +2742,14 @@ class SingleArmFaceApproachGraspNode(Node):
         )
         if not success:
             self.get_logger().error('Fallo al registrar el objeto en el mundo. Abortando...')
-            rclpy.shutdown()
+            self.abortar_objeto_actual("Fallo al registrar el objeto en el mundo")
             return
 
         # Verificar
         verified = self.verificar_objeto_en_mundo_no_attached('objeto_manipulado')
         if not verified:
             self.get_logger().error('Verificación fallida al registrar objeto en mundo. Abortando...')
-            rclpy.shutdown()
+            self.abortar_objeto_actual("Verificación fallida al registrar objeto en mundo")
             return
 
         self.get_logger().info('Objeto principal e interno registrados como geometrías de colisión.')
@@ -1623,14 +2861,14 @@ class SingleArmFaceApproachGraspNode(Node):
         )
         if not success:
             self.get_logger().error('Fallo al adjuntar objetos por servicio. Abortando...')
-            rclpy.shutdown()
+            self.abortar_objeto_actual("Fallo al adjuntar objetos por servicio")
             return
 
         # Verificar
         verified = self.verificar_objeto_attached('objeto_manipulado')
         if not verified:
             self.get_logger().error('Verificación fallida al adjuntar objeto al TCP. Abortando...')
-            rclpy.shutdown()
+            self.abortar_objeto_actual("Verificación fallida al adjuntar objeto al TCP")
             return
 
         self.get_logger().info(
@@ -1639,6 +2877,19 @@ class SingleArmFaceApproachGraspNode(Node):
         )
 
     def registrar_objeto_en_destino(self) -> None:
+        pose_actual = self.obtener_pose_tcp_actual()
+        tcp_actual_str = "No disponible"
+        if pose_actual is not None:
+            tcp_pos, tcp_quat = self.pose_to_np(pose_actual)
+            tcp_actual_str = f"pos={tcp_pos.tolist()}, quat={tcp_quat.tolist()}"
+
+        self.get_logger().info(
+            f"[REGISTRO COHERENTE] Iniciando registro en destino:\n"
+            f"  place_object_center (esperado): {self.place_object_center.tolist()}\n"
+            f"  tcp_place (esperado): {self.tcp_place.tolist()}\n"
+            f"  TCP Actual: {tcp_actual_str}\n"
+            f"  stage actual (transfer_stage): {self.transfer_stage}"
+        )
         self.get_logger().info('Registrando objeto en el destino final/mesa...')
 
         # 1. Remover objetos attached
@@ -1659,7 +2910,7 @@ class SingleArmFaceApproachGraspNode(Node):
         )
         if not success_detach:
             self.get_logger().error('Fallo al desadjuntar objetos por servicio. Abortando...')
-            rclpy.shutdown()
+            self.abortar_objeto_actual("Fallo al desadjuntar objetos por servicio")
             return
 
         # 2. Actualizar posiciones
@@ -1698,14 +2949,14 @@ class SingleArmFaceApproachGraspNode(Node):
         )
         if not success_place:
             self.get_logger().error('Fallo al registrar objetos en destino por servicio. Abortando...')
-            rclpy.shutdown()
+            self.abortar_objeto_actual("Fallo al registrar objetos en destino por servicio")
             return
 
         # 5. Verificar objeto en mundo no attached
         verified = self.verificar_objeto_en_mundo_no_attached('objeto_manipulado', timeout_sec=2.0)
         if not verified:
             self.get_logger().error('Verificación fallida al registrar objeto en destino. Abortando...')
-            rclpy.shutdown()
+            self.abortar_objeto_actual("Verificación fallida al registrar objeto en destino")
             return
 
         self.get_logger().info(
@@ -1741,6 +2992,234 @@ class SingleArmFaceApproachGraspNode(Node):
 
         return R.from_euler('xyz', [0.0, pitch_deg, yaw_final_deg], degrees=True).as_quat()
 
+    def calcular_poses_tcp_shelf(self) -> None:
+        """
+        Calcula poses de aproximación frontal para estante (shelf):
+        - tcp_contact: pose de contacto frente a la cara del objeto (con dz_offset).
+        - tcp_pregrasp: pose frontal fuera del estante.
+        - tcp_ready: alias de tcp_pregrasp.
+        """
+        self.tcp_quat = self.orientacion_tcp_para_objeto()
+        r_tcp = R.from_quat(self.tcp_quat).as_matrix()
+
+        # +X local apunta hacia el objeto
+        self.approach_dir_world = r_tcp.dot(np.array([1.0, 0.0, 0.0], dtype=float))
+        self.approach_dir_world = self.approach_dir_world / np.linalg.norm(self.approach_dir_world)
+
+        # Contact pose is object_position + approach_dir_world * (object_radius + shelf_surface_clearance)
+        contact_offset = self.object_contact_radius() + self.shelf_surface_clearance
+        self.tcp_contact = self.object_position + self.approach_dir_world * contact_offset
+        self.tcp_contact[2] += self.dz_offset
+
+        # Pregrasp frontal fuera del estante usando la dirección de salida del estante
+        shelf_out_dir = self.obtener_direccion_salida_estante()
+        self.tcp_pregrasp = self.tcp_contact + shelf_out_dir * abs(self.shelf_pregrasp_distance)
+        self.tcp_ready = np.copy(self.tcp_pregrasp)
+
+        # Diagnóstico geométrico en pick (salida)
+        v_exit_raw = self.tcp_pregrasp - self.tcp_contact
+        v_exit_norm = np.linalg.norm(v_exit_raw)
+        if v_exit_norm > 1e-6:
+            v_exit = v_exit_raw / v_exit_norm
+        else:
+            v_exit = np.array([-1.0, 0.0, 0.0])
+        
+        dot_exit = float(np.dot(v_exit, shelf_out_dir))
+
+        # Distancia entre pregrasp y contact
+        dist_pre_contact = float(np.linalg.norm(self.tcp_pregrasp - self.tcp_contact))
+
+        # Loggear info requerida
+        self.get_logger().info(
+            f"[SHELF ACCESS DIRECTION] Pick Poses:\n"
+            f"  shelf_access_direction_mode: {self.shelf_access_direction_mode}\n"
+            f"  approach_dir_world (objeto): {self.approach_dir_world.tolist()}\n"
+            f"  shelf_out_dir (salida estante): {shelf_out_dir.tolist()}\n"
+            f"  tcp_contact: {self.tcp_contact.tolist()}\n"
+            f"  tcp_pregrasp (pregrasp final): {self.tcp_pregrasp.tolist()}\n"
+            f"  dist_contact_to_pregrasp: {dist_pre_contact:.4f} m\n"
+            f"  dot_exit (v_exit * shelf_out_dir): {dot_exit:.4f} (esperado ~ 1.0)"
+        )
+
+        self.get_logger().info(
+            f"[MODO SHELF - POSES TCP]\n"
+            f"  side: {self.cfg.side}\n"
+            f"  transfer_stage: {self.transfer_stage}\n"
+            f"  object_position: {self.object_position.tolist()}\n"
+            f"  object_yaw_rad: {self.object_yaw_rad:.4f}\n"
+            f"  approach_dir_world: {self.approach_dir_world.tolist()}\n"
+            f"  shelf_out_dir: {shelf_out_dir.tolist()}\n"
+            f"  tcp_contact: {self.tcp_contact.tolist()}\n"
+            f"  tcp_pregrasp: {self.tcp_pregrasp.tolist()}\n"
+            f"  dist_pregrasp_to_contact: {dist_pre_contact:.4f} m\n"
+            f"  shelf_pregrasp_distance: {self.shelf_pregrasp_distance:.4f} m\n"
+            f"  shelf_surface_clearance: {self.shelf_surface_clearance:.4f} m"
+        )
+
+        # Diagnóstico geométrico del offset (Requerimiento 7)
+        self.diagnosticar_geometrico_offset_shelf()
+
+        if self.publish_debug_markers:
+            self.publicar_marker(self.tcp_pregrasp, 1, 'tcp_pregrasp', [0.1, 0.2, 1.0, 0.65], 0.030)
+            self.publicar_marker(self.tcp_ready, 2, 'tcp_ready', [0.2, 0.9, 0.9, 0.65], 0.030)
+            self.publicar_marker(self.tcp_contact, 3, 'tcp_contact', [1.0, 0.4, 0.0, 0.75], 0.030)
+            self.publicar_marker(
+                position=self.tcp_contact,
+                marker_id=4,
+                namespace='tcp_approach_arrow',
+                rgba=[1.0, 0.0, 0.0, 0.9],
+                marker_type=Marker.ARROW,
+                quat=self.tcp_quat,
+                scale_xyz=[0.06, 0.01, 0.01]
+            )
+
+    def diagnosticar_geometrico_offset_shelf(self) -> None:
+        """
+        Diagnóstico geométrico del offset requerido en modo shelf (Requerimiento 7).
+        """
+        # Vector objeto -> tcp_contact
+        v_obj_to_contact = self.tcp_contact - self.object_position
+        proj_obj_contact = float(np.dot(v_obj_to_contact, self.approach_dir_world))
+        
+        # Componente perpendicular
+        v_perp = v_obj_to_contact - proj_obj_contact * self.approach_dir_world
+        norm_perp = float(np.linalg.norm(v_perp))
+        
+        expected_contact_dist = self.object_contact_radius() + self.shelf_surface_clearance
+        
+        # Vector tcp_pregrasp -> tcp_contact (usando la dirección de salida del estante)
+        shelf_out_dir = self.obtener_direccion_salida_estante()
+        v_pregrasp_to_contact = self.tcp_contact - self.tcp_pregrasp
+        proj_pregrasp_contact = float(np.dot(v_pregrasp_to_contact, shelf_out_dir))
+        
+        self.get_logger().info(
+            f"[DIAGNÓSTICO GEOMÉTRICO OFFSET SHELF]\n"
+            f"  shelf_access_direction_mode: {self.shelf_access_direction_mode}\n"
+            f"  approach_dir_world: {self.approach_dir_world.tolist()}\n"
+            f"  shelf_out_dir: {shelf_out_dir.tolist()}\n"
+            f"  vector objeto -> tcp_contact: {v_obj_to_contact.tolist()}\n"
+            f"  proyección sobre approach_dir_world: {proj_obj_contact:.4f} m\n"
+            f"  componente perpendicular (norma): {norm_perp:.4f} m (vector: {v_perp.tolist()})\n"
+            f"  distancia esperada (radio_objeto + clearance): {expected_contact_dist:.4f} m\n"
+            f"  vector tcp_pregrasp -> tcp_contact: {v_pregrasp_to_contact.tolist()}\n"
+            f"  proyección sobre shelf_out_dir: {proj_pregrasp_contact:.4f} m\n"
+            f"  distancia esperada shelf_pregrasp_distance: {self.shelf_pregrasp_distance:.4f} m"
+        )
+
+    def diagnosticar_geometrico_place_shelf(self, approach_dir_world_place: np.ndarray, shelf_out_dir: np.ndarray) -> None:
+        """
+        Diagnóstico geométrico del place en modo shelf (Requerimiento 10).
+        """
+        # Vector place_object_center -> tcp_place
+        v_center_to_place = self.tcp_place - self.place_object_center
+        proj_center_place = float(np.dot(v_center_to_place, approach_dir_world_place))
+        
+        # Componente perpendicular
+        v_perp = v_center_to_place - proj_center_place * approach_dir_world_place
+        norm_perp = float(np.linalg.norm(v_perp))
+        
+        expected_contact_dist = self.object_contact_radius() + self.shelf_surface_clearance
+        
+        # Vector tcp_place_above (preinsert) -> tcp_place (usando la dirección de salida del estante)
+        v_preinsert_to_place = self.tcp_place - self.tcp_place_above
+        proj_preinsert_place = float(np.dot(v_preinsert_to_place, shelf_out_dir))
+        
+        self.get_logger().info(
+            f"[DIAGNÓSTICO GEOMÉTRICO PLACE SHELF]\n"
+            f"  shelf_access_direction_mode: {self.shelf_access_direction_mode}\n"
+            f"  approach_dir_world_place (fino): {approach_dir_world_place.tolist()}\n"
+            f"  shelf_out_dir (salida estante): {shelf_out_dir.tolist()}\n"
+            f"  vector place_object_center -> tcp_place: {v_center_to_place.tolist()}\n"
+            f"  proyección sobre approach_dir_world_place: {proj_center_place:.4f} m\n"
+            f"  componente perpendicular (norma): {norm_perp:.4f} m (vector: {v_perp.tolist()})\n"
+            f"  distancia esperada (radio_objeto + clearance): {expected_contact_dist:.4f} m\n"
+            f"  vector tcp_place_above -> tcp_place: {v_preinsert_to_place.tolist()}\n"
+            f"  proyección sobre shelf_out_dir: {proj_preinsert_place:.4f} m\n"
+            f"  distancia esperada shelf_pregrasp_distance: {self.shelf_pregrasp_distance:.4f} m\n"
+            f"  target_object_yaw_rad: {self.target_object_yaw_rad:.4f}\n"
+            f"  side: {self.cfg.side}\n"
+            f"  transfer_stage: {self.transfer_stage}"
+        )
+
+    def log_task_descriptor_actual(self) -> None:
+        """
+        Loggea el descriptor de la tarea actual para trazabilidad (Requerimiento 11).
+        """
+        slot_str = ""
+        if self.use_explicit_target_slot:
+            slot_str = (
+                f"\n  target_slot_x: {self.target_slot_x:.4f}"
+                f"\n  target_slot_y: {self.target_slot_y:.4f}"
+                f"\n  target_slot_z: {self.target_slot_z:.4f}"
+                f"\n  target_slot_yaw_deg: {self.target_slot_yaw_deg:.2f}"
+            )
+            
+        place_mode_eff = self.obtener_place_geometry_mode_efectivo()
+        self.get_logger().info(
+            f"[DESCRIPTOR DE TAREA ACTUAL]\n"
+            f"  task_mode: {self.task_mode}\n"
+            f"  manipulation_geometry_mode: {self.manipulation_geometry_mode}\n"
+            f"  place_geometry_mode: {self.place_geometry_mode}\n"
+            f"  place_geometry_mode_efectivo: {place_mode_eff}\n"
+            f"  transfer_stage: {self.transfer_stage}\n"
+            f"  initial_arm_side: {self.initial_arm_side}\n"
+            f"  second_arm_side: {self.second_arm_side}\n"
+            f"  object_frame: {self.object_frame}\n"
+            f"  raw_object_position: {self.raw_object_position.tolist()}\n"
+            f"  object_position: {self.object_position.tolist()}\n"
+            f"  initial_object_position: {self.initial_object_position.tolist()}\n"
+            f"  place_object_center: {self.place_object_center.tolist()}\n"
+            f"  target_object_yaw_rad: {self.target_object_yaw_rad:.4f}\n"
+            f"  use_explicit_target_slot: {self.use_explicit_target_slot}\n"
+            f"  use_aruco_table_target: {self.use_aruco_table_target}\n"
+            f"  table_target_frame: {self.table_target_frame}\n"
+            f"  table_target_offset_x: {self.table_target_offset_x:.4f}\n"
+            f"  table_target_offset_y: {self.table_target_offset_y:.4f}\n"
+            f"  table_target_offset_z: {self.table_target_offset_z:.4f}\n"
+            f"  table_target_offset_mode: {self.table_target_offset_mode}\n"
+            f"  aruco_z_is_table_surface: {self.aruco_z_is_table_surface}\n"
+            f"  object_pose_reference: {self.object_pose_reference}\n"
+            f"  validate_aruco_table_target_ik: {self.validate_aruco_table_target_ik}\n"
+            f"  use_aruco_table_height: {self.use_aruco_table_height}\n"
+            f"  aruco_table_height_offset: {self.aruco_table_height_offset:.4f}\n"
+            f"  allow_cached_aruco_table_height: {self.allow_cached_aruco_table_height}\n"
+            f"  last_valid_table_surface_z: {self.last_valid_table_surface_z if self.last_valid_table_surface_z is None else round(self.last_valid_table_surface_z, 4)}\n"
+            f"  last_aruco_table_position: {self.last_aruco_table_position.tolist()}\n"
+            f"  last_aruco_table_quat: {self.last_aruco_table_quat.tolist()}\n"
+            f"  last_aruco_table_yaw_rad: {self.last_aruco_table_yaw_rad:.4f}\n"
+            f"  last_table_destination: {self.last_table_destination.tolist()}\n"
+            f"  table_place_motion_mode: {self.table_place_motion_mode}\n"
+            f"  validate_tcp_before_detach: {self.validate_tcp_before_detach}\n"
+            f"  tcp_place_position_tolerance: {self.tcp_place_position_tolerance:.4f}\n"
+            f"  tcp_place_orientation_tolerance_deg: {self.tcp_place_orientation_tolerance_deg:.2f}\n"
+            f"  abort_on_tcp_place_mismatch: {self.abort_on_tcp_place_mismatch}\n"
+            f"  shelf_lift_before_retreat_enabled: {self.shelf_lift_before_retreat_enabled}\n"
+            f"  shelf_lift_before_retreat_distance: {self.shelf_lift_before_retreat_distance:.4f}\n"
+            f"  shelf_lift_before_retreat_motion_mode: {self.shelf_lift_before_retreat_motion_mode}\n"
+            f"  shelf_retreat_keep_lift_height: {self.shelf_retreat_keep_lift_height}\n"
+            f"  shelf_lift_before_retreat_done: {self.shelf_lift_before_retreat_done}\n"
+            f"  shelf_place_insert_lifted_done: {self.shelf_place_insert_lifted_done}\n"
+            f"  shelf_place_lowering_done: {self.shelf_place_lowering_done}\n"
+            f"  pending_phase9_shelf_insert_lifted_motion: {self.pending_phase9_shelf_insert_lifted_motion}\n"
+            f"  tcp_place_lifted: {self.tcp_place_lifted.tolist()}\n"
+            f"  shelf_access_direction_mode: {self.shelf_access_direction_mode}\n"
+            f"  shelf_out_dir_world: {self.shelf_out_dir_world.tolist()}\n"
+            f"  shelf_out_dir_x: {self.shelf_out_dir_x:.4f}\n"
+            f"  shelf_out_dir_y: {self.shelf_out_dir_y:.4f}\n"
+            f"  shelf_out_dir_z: {self.shelf_out_dir_z:.4f}\n"
+            f"  shelf_retreat_motion_mode: {self.shelf_retreat_motion_mode}\n"
+            f"  shelf_insert_motion_mode: {self.shelf_insert_motion_mode}\n"
+            f"  shelf_post_place_retreat_motion_mode: {self.shelf_post_place_retreat_motion_mode}\n"
+            f"  pending_phase12_shelf_retreat_motion: {self.pending_phase12_shelf_retreat_motion}\n"
+            f"  shelf_pregrasp_distance: {self.shelf_pregrasp_distance:.4f}\n"
+            f"  ompl_num_planning_attempts: {self.ompl_num_planning_attempts}\n"
+            f"  ompl_allowed_planning_time: {self.ompl_allowed_planning_time:.4f}\n"
+            f"  ompl_max_velocity_scaling_factor: {self.ompl_max_velocity_scaling_factor:.4f}\n"
+            f"  ompl_max_acceleration_scaling_factor: {self.ompl_max_acceleration_scaling_factor:.4f}\n"
+            f"  ompl_joint_goal_tolerance: {self.ompl_joint_goal_tolerance:.4f}"
+            f"{slot_str}"
+        )
+
     def calcular_poses_tcp(self) -> None:
         """
         Calcula tres poses:
@@ -1748,6 +3227,10 @@ class SingleArmFaceApproachGraspNode(Node):
         - tcp_ready: separado en -X local a la altura del objeto.
         - tcp_contact: frente a la cara del objeto, sin penetrarla.
         """
+        if self.manipulation_geometry_mode == 'shelf':
+            self.calcular_poses_tcp_shelf()
+            return
+
         self.tcp_quat = self.orientacion_tcp_para_objeto()
         r_tcp = R.from_quat(self.tcp_quat).as_matrix()
 
@@ -1803,6 +3286,28 @@ class SingleArmFaceApproachGraspNode(Node):
                 scale_xyz=[0.06, 0.01, 0.01]
             )
 
+    def obtener_direccion_salida_estante(self, fallback_dir: np.ndarray = None) -> np.ndarray:
+        """
+        Retorna la dirección de salida segura desde el estante hacia el robot.
+        - Si shelf_access_direction_mode == 'object_approach', retorna fallback_dir o self.approach_dir_world.
+        - Si shelf_access_direction_mode == 'base_axis', retorna self.shelf_out_dir_world.
+        """
+        if self.shelf_access_direction_mode == 'object_approach':
+            return fallback_dir if fallback_dir is not None else self.approach_dir_world
+        return self.shelf_out_dir_world
+
+    def obtener_place_geometry_mode_efectivo(self) -> str:
+        """
+        Retorna el modo geométrico de place efectivo (Requerimiento 10).
+        En transferencias bimanuales, la etapa source_to_table (mesa central de transferencia)
+        siempre usa geometría tipo 'table', mientras que la etapa table_to_target
+        o tareas single_pick_place respetan el valor configurado en place_geometry_mode.
+        """
+        if self.task_mode == 'bimanual_transfer' and self.transfer_stage == 'source_to_table':
+            self.get_logger().info("[PLACE GEOMETRY] source_to_table detectado: usando geometría efectiva TABLE para mesa central.")
+            return 'table'
+        return self.place_geometry_mode
+
     def calcular_poses_place_mesa(self) -> None:
         """
         Calcula las poses para la colocación del cubo:
@@ -1810,24 +3315,45 @@ class SingleArmFaceApproachGraspNode(Node):
         - tcp_place: pose del TCP para colocarlo usando la orientación de colocación neutra (yaw = 0) y dz_offset del pick.
         - tcp_place_above: pose elevada para aproximación y retirada.
         """
+        place_mode_eff = self.obtener_place_geometry_mode_efectivo()
         if self.task_mode == 'bimanual_transfer':
             if self.transfer_stage == 'source_to_table':
                 self.place_object_center = self.calcular_destino_mesa()
                 self.target_object_yaw_rad = math.radians(self.table_object_yaw_deg)
             else:  # table_to_target
                 self.place_object_center = self.calcular_destino_final_espejado()
-                if self.final_mirror_yaw:
-                    self.target_object_yaw_rad = -self.initial_object_yaw_rad
+                if self.use_explicit_target_slot and place_mode_eff == "shelf" and self.target_slot_yaw_deg != 9999.0:
+                    self.target_object_yaw_rad = math.radians(self.target_slot_yaw_deg)
                 else:
-                    self.target_object_yaw_rad = self.initial_object_yaw_rad
+                    if self.final_mirror_yaw:
+                        self.target_object_yaw_rad = -self.initial_object_yaw_rad
+                    else:
+                        self.target_object_yaw_rad = self.initial_object_yaw_rad
         else:
             # single_pick_place
-            if self.place_object_z == -9999.0:
-                z_val = self.object_position[2]
+            if self.use_explicit_target_slot and place_mode_eff == "shelf":
+                x = self.target_slot_x if self.target_slot_x != 9999.0 else self.place_x
+                y = self.target_slot_y if self.target_slot_y != 9999.0 else self.place_y
+                z = (self.target_slot_z if self.target_slot_z != 9999.0 else 
+                     (self.object_position[2] if self.place_object_z == -9999.0 else self.place_object_z))
+                z += self.place_z_margin
+                self.place_object_center = np.array([x, y, z], dtype=float)
+                
+                if self.target_slot_yaw_deg != 9999.0:
+                    self.target_object_yaw_rad = math.radians(self.target_slot_yaw_deg)
+                else:
+                    self.target_object_yaw_rad = 0.0
             else:
-                z_val = self.place_object_z
-            self.place_object_center = np.array([self.place_x, self.place_y, z_val + self.place_z_margin], dtype=float)
+                if self.place_object_z == -9999.0:
+                    z_val = self.object_position[2]
+                else:
+                    z_val = self.place_object_z
+                self.place_object_center = np.array([self.place_x, self.place_y, z_val + self.place_z_margin], dtype=float)
+                self.target_object_yaw_rad = 0.0
+
+        if self.object_type == 'sphere':
             self.target_object_yaw_rad = 0.0
+            self.get_logger().info("[SPHERE PLACE] target_object_yaw_rad forzado a 0.0 porque object_type=sphere.")
 
         # Calcular orientación de colocación simétrica y neutra (con respecto al target_object_yaw_rad del cubo colocado)
         if self.cfg.side == 'left':
@@ -1851,26 +3377,81 @@ class SingleArmFaceApproachGraspNode(Node):
         approach_dir_world_place = r_tcp_place.dot(np.array([1.0, 0.0, 0.0], dtype=float))
         approach_dir_world_place = approach_dir_world_place / np.linalg.norm(approach_dir_world_place)
 
-        # Tanto para el brazo izquierdo como derecho, el TCP se sitúa de forma
-        # frontal (en la dirección del eje local +X de colocación) respecto al centro.
-        contact_offset = self.object_contact_radius() + self.surface_clearance
+        if place_mode_eff == 'shelf':
+            contact_offset = self.object_contact_radius() + self.shelf_surface_clearance
+            self.tcp_place = self.place_object_center + approach_dir_world_place * contact_offset
+            self.tcp_place[2] += self.dz_offset
 
-        self.tcp_place = self.place_object_center + approach_dir_world_place * contact_offset
-        self.tcp_place[2] += self.dz_offset
+            if self.shelf_lift_before_retreat_enabled:
+                self.tcp_place_lifted = self.tcp_place + np.array([0.0, 0.0, self.shelf_lift_before_retreat_distance])
+            else:
+                self.tcp_place_lifted = self.tcp_place.copy()
 
-        # tcp_place_above = tcp_place + [0, 0, place_hover_height]
-        self.tcp_place_above = self.tcp_place + np.array([0.0, 0.0, self.place_hover_height], dtype=float)
+            # For shelf placement, pre-insertion pose (tcp_place_above) is frontal to the slot (elevated if enabled)
+            # MODIFIED to use shelf_out_dir:
+            shelf_out_dir = self.obtener_direccion_salida_estante(fallback_dir=approach_dir_world_place)
+            self.tcp_place_above = self.tcp_place_lifted + shelf_out_dir * abs(self.shelf_pregrasp_distance)
+            # Retreat pose (tcp_place_retreat) is also frontal outside the slot (elevated if enabled)
+            self.tcp_place_retreat = self.tcp_place_lifted + shelf_out_dir * abs(self.shelf_pregrasp_distance)
 
-        # tcp_place_retreat = tcp_place + approach_dir_world_place * approach_distance (retirada lateral)
-        self.tcp_place_retreat = self.tcp_place + approach_dir_world_place * self.approach_distance
+            # Diagnóstico geométrico en place (inserción)
+            v_insert_raw = self.tcp_place_lifted - self.tcp_place_above
+            v_insert_norm = np.linalg.norm(v_insert_raw)
+            if v_insert_norm > 1e-6:
+                v_insert = v_insert_raw / v_insert_norm
+            else:
+                v_insert = np.array([1.0, 0.0, 0.0])
+            dot_insert = float(np.dot(v_insert, -shelf_out_dir))
 
-        self.get_logger().info(
-            'Poses de Place calculadas (Alineación Yaw Neutro): '
-            f'place_object_center={np.round(self.place_object_center, 4).tolist()} | '
-            f'tcp_place={np.round(self.tcp_place, 4).tolist()} | '
-            f'tcp_place_above={np.round(self.tcp_place_above, 4).tolist()} | '
-            f'tcp_place_retreat={np.round(self.tcp_place_retreat, 4).tolist()}'
-        )
+            self.get_logger().info(
+                "[SHELF SAFE PLACE] Place en estante con clearance vertical.\n"
+                f"  shelf_access_direction_mode: {self.shelf_access_direction_mode}\n"
+                f"  approach_dir_world_place (objeto): {approach_dir_world_place.tolist()}\n"
+                f"  shelf_out_dir (salida estante): {shelf_out_dir.tolist()}\n"
+                f"  tcp_place: {self.tcp_place.tolist()}\n"
+                f"  tcp_place_lifted: {self.tcp_place_lifted.tolist()}\n"
+                f"  tcp_place_above/preinsert_outside_shelf: {self.tcp_place_above.tolist()}\n"
+                f"  tcp_place_retreat: {self.tcp_place_retreat.tolist()}\n"
+                f"  dot_insert (v_insert * -shelf_out_dir): {dot_insert:.4f} (esperado ~ 1.0)\n"
+                f"  shelf_lift_before_retreat_distance: {self.shelf_lift_before_retreat_distance:.4f} m\n"
+                f"  clearance activo (shelf_lift_before_retreat_enabled): {self.shelf_lift_before_retreat_enabled}"
+            )
+
+            self.get_logger().info(
+                "[PLACE SHELF] Estante destino: tcp_place_above/preinsert_outside_shelf usado como preinsert frontal.\n"
+                f"  place_object_center: {self.place_object_center.tolist()}\n"
+                f"  tcp_place: {self.tcp_place.tolist()}\n"
+                f"  tcp_place_above/preinsert_outside_shelf: {self.tcp_place_above.tolist()}\n"
+                f"  tcp_place_retreat: {self.tcp_place_retreat.tolist()}\n"
+                f"  approach_dir_world_place: {approach_dir_world_place.tolist()}\n"
+                f"  shelf_out_dir: {shelf_out_dir.tolist()}\n"
+                f"  shelf_pregrasp_distance: {self.shelf_pregrasp_distance:.4f}\n"
+                f"  shelf_surface_clearance: {self.shelf_surface_clearance:.4f}\n"
+                f"  use_explicit_target_slot: {self.use_explicit_target_slot}"
+            )
+            # Diagnóstico de place (Requerimiento 10)
+            self.diagnosticar_geometrico_place_shelf(approach_dir_world_place, shelf_out_dir)
+        else:
+            # Tanto para el brazo izquierdo como derecho, el TCP se sitúa de forma
+            # frontal (en la dirección del eje local +X de colocación) respecto al centro.
+            contact_offset = self.object_contact_radius() + self.surface_clearance
+
+            self.tcp_place = self.place_object_center + approach_dir_world_place * contact_offset
+            self.tcp_place[2] += self.dz_offset
+
+            # tcp_place_above = tcp_place + [0, 0, place_hover_height]
+            self.tcp_place_above = self.tcp_place + np.array([0.0, 0.0, self.place_hover_height], dtype=float)
+
+            # tcp_place_retreat = tcp_place + approach_dir_world_place * approach_distance (retirada lateral)
+            self.tcp_place_retreat = self.tcp_place + approach_dir_world_place * self.approach_distance
+
+            self.get_logger().info(
+                "[PLACE TABLE] Mesa central: tcp_place_above usado como waypoint superior.\n"
+                f"  place_object_center: {self.place_object_center.tolist()}\n"
+                f"  tcp_place: {self.tcp_place.tolist()}\n"
+                f"  tcp_place_above: {self.tcp_place_above.tolist()}\n"
+                f"  tcp_place_retreat: {self.tcp_place_retreat.tolist()}"
+            )
 
         if self.publish_debug_markers:
             self.publicar_marker(self.place_object_center, 10, 'place_object_center', [0.8, 0.1, 0.8, 0.70], self.object_dimension)
@@ -1886,6 +3467,19 @@ class SingleArmFaceApproachGraspNode(Node):
                 quat=self.tcp_quat_place,
                 scale_xyz=[0.06, 0.01, 0.01]
             )
+
+        if self.use_aruco_table_target and self.validate_aruco_table_target_ik and (self.task_mode != 'bimanual_transfer' or self.transfer_stage == 'source_to_table'):
+            # TODO: En transferencia bimanual, la posición de mesa debería validarse para el brazo que coloca y para el brazo que recoge desde mesa.
+            self.get_logger().warn("[VALIDACIÓN IK ARUCO] NOTA: Actualmente solo se valida la IK del brazo activo.")
+            self.get_logger().info("[VALIDACIÓN IK ARUCO] Validando IK para la pose de colocación calculada en mesa central...")
+            res_ik = self.get_ik(self.tcp_place, self.tcp_quat_place, avoid_collisions=True)
+            if res_ik.error_code.val == 1:
+                self.get_logger().info("[VALIDACIÓN IK ARUCO] ¡IK para pose de colocación es VÁLIDA!")
+            else:
+                self.abortar_objeto_actual("IK inválida para el destino de colocación en mesa calculado desde ArUco.")
+                if self.enable_object_queue:
+                    return
+                raise RuntimeError(f"IK inválida para el destino de colocación en mesa calculado desde ArUco.")
 
     # ======================================================================
     # IK y planificación
@@ -1922,28 +3516,40 @@ class SingleArmFaceApproachGraspNode(Node):
             )
         return target_names, target_positions
 
-    def enviar_meta_articular_brazo(self, names: List[str], positions: List[float], phase: int) -> None:
+    def enviar_meta_articular_brazo(self, names: List[str], positions: List[float], phase: int, label: str = "reposo neutral") -> None:
         self.current_phase = phase
         if not self.move_group_client.wait_for_server(timeout_sec=10.0):
             self.get_logger().error('Servidor MoveGroup no disponible.')
-            rclpy.shutdown()
+            self.abortar_objeto_actual("Servidor MoveGroup no disponible")
             return
+
+        self.get_logger().info(
+            f"[OMPL PLANNING] Planificación solicitada:\n"
+            f"  Fase: {phase}\n"
+            f"  Label: {label}\n"
+            f"  Grupo activo: {self.cfg.arm_group}\n"
+            f"  ompl_num_planning_attempts: {self.ompl_num_planning_attempts}\n"
+            f"  ompl_allowed_planning_time: {self.ompl_allowed_planning_time:.4f}\n"
+            f"  ompl_max_velocity_scaling_factor: {self.ompl_max_velocity_scaling_factor:.4f}\n"
+            f"  ompl_max_acceleration_scaling_factor: {self.ompl_max_acceleration_scaling_factor:.4f}\n"
+            f"  ompl_joint_goal_tolerance: {self.ompl_joint_goal_tolerance:.4f}"
+        )
 
         goal_msg = MoveGroup.Goal()
         req = MotionPlanRequest()
         req.group_name = self.cfg.arm_group
-        req.num_planning_attempts = 35
-        req.allowed_planning_time = 10.0
-        req.max_velocity_scaling_factor = 0.12
-        req.max_acceleration_scaling_factor = 0.12
+        req.num_planning_attempts = self.ompl_num_planning_attempts
+        req.allowed_planning_time = self.ompl_allowed_planning_time
+        req.max_velocity_scaling_factor = self.ompl_max_velocity_scaling_factor
+        req.max_acceleration_scaling_factor = self.ompl_max_acceleration_scaling_factor
 
         constraints = Constraints()
         for name, pos in zip(names, positions):
             jc = JointConstraint()
             jc.joint_name = name
             jc.position = float(pos)
-            jc.tolerance_above = 0.01
-            jc.tolerance_below = 0.01
+            jc.tolerance_above = self.ompl_joint_goal_tolerance
+            jc.tolerance_below = self.ompl_joint_goal_tolerance
             jc.weight = 1.0
             constraints.joint_constraints.append(jc)
 
@@ -1960,7 +3566,7 @@ class SingleArmFaceApproachGraspNode(Node):
             valid_curr = self.verificar_estado_actual(f"antes de fase {phase} - {label}")
             if self.abort_on_invalid_state_before_motion and not valid_curr:
                 self.get_logger().error(f"Abortando: estado actual inválido antes de fase {phase} - {label}.")
-                rclpy.shutdown()
+                self.abortar_objeto_actual(f"estado actual inválido antes de fase {phase} - {label}")
                 return
 
         res_ik = self.get_ik(pos, quat, avoid_collisions=True)
@@ -1978,24 +3584,24 @@ class SingleArmFaceApproachGraspNode(Node):
                     'Si aquí funciona, el problema es geométrico/colisión, no cinemático.'
                 )
 
-            rclpy.shutdown()
+            self.abortar_objeto_actual(f"IK con colisiones falló en fase {phase} ({label})")
             return
 
         if self.enable_state_validity_diagnostics:
             valid_ik = self.verificar_estado_ik(res_ik, f"goal IK fase {phase} - {label}")
             if self.abort_on_invalid_state_before_motion and not valid_ik:
                 self.get_logger().error(f"Abortando: estado objetivo IK inválido para fase {phase} - {label}.")
-                rclpy.shutdown()
+                self.abortar_objeto_actual(f"estado objetivo IK inválido para fase {phase} - {label}")
                 return
 
         names, positions = self.filtrar_joints_brazo(res_ik)
-        self.enviar_meta_articular_brazo(names, positions, phase=phase)
+        self.enviar_meta_articular_brazo(names, positions, phase=phase, label=label)
 
     def move_group_goal_response_callback(self, future) -> None:
         goal_handle = future.result()
         if not goal_handle.accepted:
             self.get_logger().error(f'Planificación fase {self.current_phase} rechazada.')
-            rclpy.shutdown()
+            self.abortar_objeto_actual(f"Planificación fase {self.current_phase} rechazada")
             return
 
         self.get_logger().info(f'Planificación fase {self.current_phase} aceptada. Ejecutando...')
@@ -2006,14 +3612,90 @@ class SingleArmFaceApproachGraspNode(Node):
         result = future.result().result
         if result.error_code.val == 1:
             self.get_logger().info(f'Fase {self.current_phase} completada correctamente.')
-            if self.current_phase == 12 and self.use_split_place_retreat and not self.retreat_done:
+            if self.current_phase == 12 and self.pending_phase12_shelf_retreat_motion:
+                self.pending_phase12_shelf_retreat_motion = False
                 self.retreat_done = True
                 self.ejecutar_fase_12_retirada_segura()
+                return
+            elif self.current_phase == 12 and self.use_split_place_retreat and not self.retreat_done:
+                self.retreat_done = True
+                self.ejecutar_fase_12_retirada_segura()
+            elif self.current_phase == 7 and self.pending_phase7_lift_motion:
+                self.pending_phase7_lift_motion = False
+                self.shelf_lift_before_retreat_done = True
+                pose_actual = self.obtener_pose_tcp_actual()
+                if pose_actual is not None:
+                    tcp_actual_pos, _ = self.pose_to_np(pose_actual)
+                    pos_error = float(np.linalg.norm(tcp_actual_pos - self.tcp_post_grasp_lift))
+                    self.get_logger().info(
+                        f"[SHELF SAFE EXTRACTION] Micro-lift OMPL completado.\n"
+                        f"  tcp_actual_post_lift: {tcp_actual_pos.tolist()}\n"
+                        f"  tcp_post_grasp_lift esperado: {self.tcp_post_grasp_lift.tolist()}\n"
+                        f"  error posicional: {pos_error:.4f} m"
+                    )
+                else:
+                    self.get_logger().warn("[SHELF SAFE EXTRACTION] Micro-lift OMPL completado, pero no se pudo obtener la pose actual del TCP.")
+                self.ejecutar_fase_7_retirada_vertical()
+                return
+            elif self.current_phase == 9 and self.pending_phase9_shelf_insert_lifted_motion:
+                self.pending_phase9_shelf_insert_lifted_motion = False
+                self.shelf_place_insert_lifted_done = True
+                pose_actual = self.obtener_pose_tcp_actual()
+                tcp_actual_pos = None
+                if pose_actual is not None:
+                    tcp_actual_pos, _ = self.pose_to_np(pose_actual)
+                    pos_error = float(np.linalg.norm(tcp_actual_pos - self.tcp_place_lifted))
+                    self.get_logger().info(
+                        f"[SHELF SAFE PLACE] Inserción horizontal elevada con OMPL completada.\n"
+                        f"  tcp_actual: {tcp_actual_pos.tolist()}\n"
+                        f"  tcp_place_lifted esperado: {self.tcp_place_lifted.tolist()}\n"
+                        f"  error posicional: {pos_error:.4f} m"
+                    )
+                else:
+                    self.get_logger().warn("[SHELF SAFE PLACE] Inserción horizontal elevada con OMPL completada, pero no se pudo obtener la pose actual del TCP.")
+
+                # Calcular distancias y vector
+                v_expected = self.tcp_place - self.tcp_place_lifted
+                dist_expected = float(np.linalg.norm(v_expected))
+                
+                dist_real = 0.0
+                v_real = np.zeros(3)
+                v_real_norm = np.array([0.0, 0.0, -1.0])
+                if tcp_actual_pos is not None:
+                    v_real = self.tcp_place - tcp_actual_pos
+                    dist_real = float(np.linalg.norm(v_real))
+                    if dist_real > 1e-6:
+                        v_real_norm = v_real / dist_real
+                else:
+                    dist_real = dist_expected
+                    if dist_expected > 1e-6:
+                        v_real_norm = v_expected / dist_expected
+
+                self.get_logger().info(
+                    "[SHELF SAFE PLACE] Ejecutando descenso vertical corto (desde OMPL) hacia tcp_place:\n"
+                    f"  tcp_place_lifted: {self.tcp_place_lifted.tolist()}\n"
+                    f"  tcp_place: {self.tcp_place.tolist()}\n"
+                    f"  distancia esperada: {dist_expected:.4f} m\n"
+                    f"  distancia real: {dist_real:.4f} m\n"
+                    f"  vector de descenso normalizado: {v_real_norm.tolist()}"
+                )
+
+                if self.publish_debug_markers:
+                    self.publicar_marker(self.tcp_place_lifted, 42, 'tcp_place_lifted', [1.0, 0.5, 0.5, 0.8], quat=self.tcp_quat_place, escala=0.030)
+
+                self.ejecutar_movimiento_cartesiano_local(
+                    target_pos=self.tcp_place,
+                    target_quat=self.tcp_quat_place,
+                    phase=9,
+                    label="descenso vertical corto para depositar objeto en estante",
+                    on_success="phase9_shelf_lowering_done"
+                )
+                return
             else:
                 self.ejecutar_siguiente_fase()
         else:
             self.get_logger().error(f'Error MoveIt en fase {self.current_phase}: {result.error_code.val}')
-            rclpy.shutdown()
+            self.abortar_objeto_actual(f"Error MoveIt en fase {self.current_phase}: {result.error_code.val}")
 
     # ======================================================================
     # Mano
@@ -2021,6 +3703,116 @@ class SingleArmFaceApproachGraspNode(Node):
 
     def hand_open_positions(self) -> List[float]:
         return [0.0 for _ in self.cfg.hand_joints]
+
+    def confirmar_apertura_mano_antes_de_detach(self) -> bool:
+        self.get_logger().info(
+            f"[RELEASE CONFIRMATION] Comando de apertura de mano completado. Esperando estabilización {self.release_settle_time} s."
+        )
+        time.sleep(self.release_settle_time)
+
+        if self.last_joint_state is None:
+            if self.allow_detach_without_hand_joint_feedback:
+                self.get_logger().warn(
+                    "[RELEASE CONFIRMATION] No hay feedback de joint_states disponible (last_joint_state es None); "
+                    "se continúa por modo permisivo."
+                )
+                return True
+            else:
+                self.get_logger().error(
+                    "[RELEASE CONFIRMATION] No hay feedback de joint_states disponible y allow_detach_without_hand_joint_feedback es False. Abortando."
+                )
+                return False
+
+        # Construir diccionario de nombres a posiciones
+        joint_pos = dict(zip(self.last_joint_state.name, self.last_joint_state.position))
+        target_positions = self.hand_open_positions()
+
+        # 1. Verificar si faltan joints
+        missing_joints = [name for name in self.cfg.hand_joints if name not in joint_pos]
+
+        if missing_joints:
+            if self.allow_detach_without_hand_joint_feedback:
+                self.get_logger().warn(
+                    f"[RELEASE CONFIRMATION] No hay feedback suficiente de mano (faltan joints: {missing_joints}); "
+                    "se continúa por modo permisivo."
+                )
+                return True
+            else:
+                self.get_logger().error(
+                    f"[RELEASE CONFIRMATION] Feedback de mano insuficiente (faltan joints: {missing_joints}) "
+                    "y allow_detach_without_hand_joint_feedback es False. Abortando."
+                )
+                return False
+
+        # 2. Comparar joints presentes con las posiciones objetivo
+        all_within_tolerance = True
+        for i, joint_name in enumerate(self.cfg.hand_joints):
+            actual = joint_pos[joint_name]
+            target = target_positions[i]
+            error_abs = abs(actual - target)
+            if error_abs > self.hand_open_position_tolerance:
+                self.get_logger().error(
+                    f"[RELEASE CONFIRMATION] Junta '{joint_name}' fuera de tolerancia: "
+                    f"actual={actual:.4f}, objetivo={target:.4f}, error_abs={error_abs:.4f} > tol={self.hand_open_position_tolerance:.4f}"
+                )
+                all_within_tolerance = False
+
+        if not all_within_tolerance:
+            # El modo permisivo no debe ignorar un feedback explícitamente fuera de tolerancia
+            self.get_logger().error(
+                "[RELEASE CONFIRMATION] Se detectaron juntas fuera de tolerancia de apertura. Abortando."
+            )
+            return False
+
+        self.get_logger().info("[RELEASE CONFIRMATION] Apertura confirmada por joint_states.")
+        return True
+
+    def validar_tcp_antes_de_detach(self) -> bool:
+        pose_actual = self.obtener_pose_tcp_actual()
+        if pose_actual is None:
+            self.get_logger().error(
+                "[DETACH POSE VALIDATION] No se pudo obtener la pose actual del TCP."
+            )
+            if self.abort_on_tcp_place_mismatch:
+                return False
+            return True
+
+        tcp_actual_pos, tcp_actual_quat = self.pose_to_np(pose_actual)
+        pos_error = float(np.linalg.norm(tcp_actual_pos - self.tcp_place))
+        ori_error_deg = float(self.distancia_angular_quat_deg(tcp_actual_quat, self.tcp_quat_place))
+        place_mode_eff = self.obtener_place_geometry_mode_efectivo()
+
+        # Verificar si el objeto sigue attached antes del detach usando la función de verificación disponible
+        is_attached = self.verificar_objeto_attached('objeto_manipulado', timeout_sec=0.1)
+
+        self.get_logger().info(
+            f"[DETACH POSE VALIDATION] Comparación de pose para liberación:\n"
+            f"  transfer_stage: {self.transfer_stage}\n"
+            f"  place_geometry_mode_efectivo: {place_mode_eff}\n"
+            f"  current_phase: {self.current_phase}\n"
+            f"  objeto sigue attached (verificar_objeto_attached): {is_attached}\n"
+            f"  [NOTA] Validación TCP-before-detach compara contra self.tcp_place, no contra self.tcp_place_lifted.\n"
+            f"  TCP Actual: pos={tcp_actual_pos.tolist()}, quat={tcp_actual_quat.tolist()}\n"
+            f"  TCP Place esperado (self.tcp_place): pos={self.tcp_place.tolist()}, quat={self.tcp_quat_place.tolist()}\n"
+            f"  TCP Place Lifted (referencia de inserción): pos={self.tcp_place_lifted.tolist()}\n"
+            f"  place_object_center: {self.place_object_center.tolist()}\n"
+            f"  Error posicional: {pos_error:.4f} m (tolerancia: {self.tcp_place_position_tolerance:.4f} m)\n"
+            f"  Error angular: {ori_error_deg:.2f}° (tolerancia: {self.tcp_place_orientation_tolerance_deg:.2f}°)"
+        )
+
+        if (pos_error <= self.tcp_place_position_tolerance and
+                ori_error_deg <= self.tcp_place_orientation_tolerance_deg):
+            self.get_logger().info("[DETACH POSE VALIDATION] ¡Validación exitosa! El TCP coincide con la pose de liberación.")
+            return True
+        else:
+            self.get_logger().error(
+                f"[DETACH POSE VALIDATION] TCP no coincide con pose de liberación esperada. "
+                f"Error posicional: {pos_error:.4f} m, Error angular: {ori_error_deg:.2f}°"
+            )
+            if self.abort_on_tcp_place_mismatch:
+                return False
+            self.get_logger().warn("[DETACH POSE VALIDATION] Continuando por abort_on_tcp_place_mismatch=False.")
+            return True
 
     def calcular_configuracion_mano(self) -> List[float]:
         d_open = 0.120
@@ -2055,7 +3847,7 @@ class SingleArmFaceApproachGraspNode(Node):
         self.current_phase = phase
         if not self.hand_action_client.wait_for_server(timeout_sec=5.0):
             self.get_logger().error(f'Controlador de mano no disponible: {self.cfg.hand_controller_action}')
-            rclpy.shutdown()
+            self.abortar_objeto_actual(f"Controlador de mano no disponible: {self.cfg.hand_controller_action}")
             return
 
         goal_msg = FollowJointTrajectory.Goal()
@@ -2076,7 +3868,7 @@ class SingleArmFaceApproachGraspNode(Node):
         goal_handle = future.result()
         if not goal_handle.accepted:
             self.get_logger().error(f'Comando de mano fase {self.current_phase} rechazado.')
-            rclpy.shutdown()
+            self.abortar_objeto_actual(f"Comando de mano fase {self.current_phase} rechazado")
             return
 
         result_future = goal_handle.get_result_async()
@@ -2084,12 +3876,32 @@ class SingleArmFaceApproachGraspNode(Node):
 
     def hand_result_callback(self, future) -> None:
         error_code = future.result().result.error_code
+        if self.current_phase == 10:
+            if error_code == 0:
+                self.get_logger().info('Movimiento de mano fase 10 completado.')
+                if self.confirm_hand_open_before_detach:
+                    success = self.confirmar_apertura_mano_antes_de_detach()
+                    if success:
+                        self.hand_open_confirmed = True
+                        self.ejecutar_siguiente_fase()
+                    else:
+                        self.get_logger().error('[RELEASE CONFIRMATION] Falló la confirmación de la apertura de mano. Abortando.')
+                        self.abortar_objeto_actual("Falló la confirmación de la apertura de mano")
+                else:
+                    self.hand_open_confirmed = True
+                    self.ejecutar_siguiente_fase()
+            else:
+                self.get_logger().error(f'Fallo en controlador de mano fase 10. Código: {error_code}')
+                self.abortar_objeto_actual(f"Fallo en controlador de mano fase 10. Código: {error_code}")
+            return
+
+        # Flujo genérico para fases distintas a la 10
         if error_code == 0:
             self.get_logger().info(f'Movimiento de mano fase {self.current_phase} completado.')
             self.ejecutar_siguiente_fase()
         else:
             self.get_logger().error(f'Fallo en controlador de mano fase {self.current_phase}. Código: {error_code}')
-            rclpy.shutdown()
+            self.abortar_objeto_actual(f"Fallo en controlador de mano fase {self.current_phase}. Código: {error_code}")
 
     # ======================================================================
     # CIERRE TACTIL ACTIVO GRADUAL (MONITOREO INDIVIDUAL POR DEDO - MUJOCO)
@@ -2133,7 +3945,7 @@ class SingleArmFaceApproachGraspNode(Node):
         if not post or not self.pre_close_effort:
             self.get_logger().error('Pérdida de propiocepción en el bucle táctil.')
             self.grasp_timer.cancel()
-            rclpy.shutdown()
+            self.abortar_objeto_actual("Pérdida de propiocepción en el bucle táctil")
             return
             
         p = self.cfg.link_prefix
@@ -2230,14 +4042,25 @@ class SingleArmFaceApproachGraspNode(Node):
         if self.use_table_collision:
             self.añadir_mesa_colision()
         self.añadir_objeto_colision_mundo()
+        self.registrar_objetos_pasivos_como_obstaculos()
         self.enviar_comando_mano(self.hand_open_positions(), phase=1)
 
     def ejecutar_fase_2_preagarre_elevado(self) -> None:
         self.get_logger().info('=== FASE 2: Preagarre elevado ===')
         self.calcular_poses_tcp()
-        self.planificar_a_pose(self.tcp_pregrasp, self.tcp_quat, phase=2, label='preagarre elevado')
+        if self.manipulation_geometry_mode == 'shelf':
+            self.get_logger().info('Modo shelf: pregrasp frontal planificado con OMPL')
+            self.planificar_a_pose(self.tcp_pregrasp, self.tcp_quat, phase=2, label='pregrasp frontal shelf con OMPL')
+        else:
+            self.planificar_a_pose(self.tcp_pregrasp, self.tcp_quat, phase=2, label='preagarre elevado')
 
     def ejecutar_fase_3_descenso_vertical(self) -> None:
+        if self.manipulation_geometry_mode == 'shelf' and self.shelf_skip_vertical_descent:
+            self.get_logger().info('Modo shelf: Fase 3 omitida, no se usa descenso vertical sobre el cubo.')
+            self.current_phase = 3
+            self.ejecutar_siguiente_fase()
+            return
+
         self.get_logger().info('=== FASE 3: Descenso vertical manteniendo separación lateral ===')
         self.planificar_a_pose(self.tcp_ready, self.tcp_quat, phase=3, label='descenso vertical')
 
@@ -2247,23 +4070,33 @@ class SingleArmFaceApproachGraspNode(Node):
         # Sincronización y diagnóstico del TCP actual contra tcp_ready
         if not self.esperar_tcp_cerca_de_ready_para_fase4():
             self.get_logger().error("Abortando Fase 4: TCP actual no está suficientemente cerca de tcp_ready tras Fase 3.")
-            rclpy.shutdown()
+            self.abortar_objeto_actual("TCP actual no está suficientemente cerca de tcp_ready tras Fase 3")
             return
 
-        if self.use_cartesian_local_motions:
-            # Diagnóstico específico de Fase 4 antes de ejecutar el cartesiano
-            dist_lineal_esperada = np.linalg.norm(self.tcp_contact - self.tcp_ready)
-            self.get_logger().info(
-                f"[DIAGNÓSTICO FASE 4] Parámetros de aproximación frontal cartesiana:\n"
-                f"  Lado: {self.cfg.side}\n"
-                f"  Etapa de transferencia: {self.transfer_stage}\n"
-                f"  TCP Ready: {self.tcp_ready.tolist()}\n"
-                f"  TCP Contact: {self.tcp_contact.tolist()}\n"
-                f"  Distancia lineal esperada: {dist_lineal_esperada:.4f} m\n"
-                f"  Dirección aproximación (world): {self.approach_dir_world.tolist()}\n"
-                f"  Posición del objeto: {self.object_position.tolist()}\n"
-                f"  Yaw del objeto (rad): {self.object_yaw_rad:.4f}"
+        # Diagnóstico específico de Fase 4
+        dist_lineal_esperada = np.linalg.norm(self.tcp_contact - self.tcp_ready)
+        self.get_logger().info(
+            f"[DIAGNÓSTICO FASE 4] Parámetros de aproximación frontal:\n"
+            f"  Lado: {self.cfg.side}\n"
+            f"  Etapa de transferencia: {self.transfer_stage}\n"
+            f"  TCP Ready: {self.tcp_ready.tolist()}\n"
+            f"  TCP Contact: {self.tcp_contact.tolist()}\n"
+            f"  Distancia lineal esperada: {dist_lineal_esperada:.4f} m\n"
+            f"  Dirección aproximación (world): {self.approach_dir_world.tolist()}\n"
+            f"  Posición del objeto: {self.object_position.tolist()}\n"
+            f"  Yaw del objeto (rad): {self.object_yaw_rad:.4f}"
+        )
+        self.diagnosticar_convencion_tcp_fase4()
+
+        if self.manipulation_geometry_mode == 'shelf':
+            self.get_logger().warn("Modo shelf: Fase 4 con OMPL hacia contacto para evitar colisión de codo/torso.")
+            self.planificar_a_pose(
+                self.tcp_contact,
+                self.tcp_quat,
+                phase=4,
+                label='aproximación frontal OMPL shelf a cara del objeto'
             )
+        elif self.phase4_motion_mode == 'cartesian':
             self.ejecutar_movimiento_cartesiano_local(
                 target_pos=self.tcp_contact,
                 target_quat=self.tcp_quat,
@@ -2271,8 +4104,17 @@ class SingleArmFaceApproachGraspNode(Node):
                 label="aproximación cartesiana frontal a cara del objeto",
                 on_success="phase4_done"
             )
-        else:
-            self.planificar_a_pose(self.tcp_contact, self.tcp_quat, phase=4, label='aproximación a cara del objeto')
+        elif self.phase4_motion_mode == 'ompl':
+            self.get_logger().warn(
+                "[FASE 4] Usando OMPL básico solo para Fase 4. "
+                "Las demás fases conservan su lógica actual."
+            )
+            self.planificar_a_pose(
+                self.tcp_contact,
+                self.tcp_quat,
+                phase=4,
+                label='aproximación frontal OMPL básica a cara del objeto'
+            )
 
     def ejecutar_fase_5_cierre_adaptativo(self) -> None:
         self.get_logger().info('=== FASE 5: Iniciando cierre de mano ===')
@@ -2289,7 +4131,7 @@ class SingleArmFaceApproachGraspNode(Node):
             self.get_logger().info(msg)
         else:
             self.get_logger().error(msg)
-            rclpy.shutdown()
+            self.abortar_objeto_actual(msg)
             return
 
         self.adjuntar_objeto_al_tcp()
@@ -2297,43 +4139,216 @@ class SingleArmFaceApproachGraspNode(Node):
         self.ejecutar_siguiente_fase()
 
     def ejecutar_fase_7_retirada_vertical(self) -> None:
-        self.get_logger().info('=== FASE 7: Retirada vertical con objeto adjunto ===')
-        target = np.array(self.tcp_contact, dtype=float)
-        target[2] += self.lift_distance
-        self.planificar_a_pose(target, self.tcp_quat, phase=7, label='retirada vertical')
+        if self.manipulation_geometry_mode == 'shelf':
+            # Comentario técnico: El micro-lift previo a la retirada reduce el riesgo de arrastre del objeto
+            # sobre la superficie del estante en simulación física o hardware. En RViz no es observable
+            # directamente porque no hay dinámica de contacto, pero es necesario para coherencia física del procedimiento.
+            if self.shelf_lift_before_retreat_enabled and not self.shelf_lift_before_retreat_done:
+                # Verificar que el objeto esté attached antes de iniciar el micro-lift
+                is_attached = self.verificar_objeto_attached('objeto_manipulado', timeout_sec=1.5)
+                if not is_attached:
+                    self.get_logger().error("[SHELF SAFE EXTRACTION] No se ejecuta micro-lift porque el objeto no está attached.")
+                    self.abortar_objeto_actual("No se ejecuta micro-lift porque el objeto no está attached")
+                    return
+
+                self.tcp_post_grasp_lift = self.tcp_contact + np.array([0.0, 0.0, self.shelf_lift_before_retreat_distance])
+                
+                self.get_logger().info(
+                    f"[SHELF SAFE EXTRACTION] Ejecutando micro-lift vertical antes de retirada frontal:\n"
+                    f"  tcp_contact: {self.tcp_contact.tolist()}\n"
+                    f"  tcp_post_grasp_lift: {self.tcp_post_grasp_lift.tolist()}\n"
+                    f"  distancia de lift: {self.shelf_lift_before_retreat_distance:.4f} m\n"
+                    f"  objeto actual: objeto_manipulado\n"
+                    f"  transfer_stage: {self.transfer_stage}"
+                )
+
+                if self.publish_debug_markers:
+                    self.publicar_marker(self.tcp_post_grasp_lift, 40, 'tcp_post_grasp_lift', [1.0, 0.84, 0.0, 0.8], quat=self.tcp_quat, escala=0.030)
+
+                if self.shelf_lift_before_retreat_motion_mode == 'cartesian':
+                    self.ejecutar_movimiento_cartesiano_local(
+                        target_pos=self.tcp_post_grasp_lift,
+                        target_quat=self.tcp_quat,
+                        phase=7,
+                        label="micro-lift cartesiano vertical antes de retirada tipo shelf",
+                        on_success="phase7_lift_done"
+                    )
+                else:  # 'ompl'
+                    self.pending_phase7_lift_motion = True
+                    self.planificar_a_pose(
+                        self.tcp_post_grasp_lift,
+                        self.tcp_quat,
+                        phase=7,
+                        label="micro-lift vertical OMPL antes de retirada tipo shelf"
+                    )
+            else:
+                self.get_logger().info('=== FASE 7: Retirada frontal tipo shelf con objeto adjunto ===')
+                
+                target_retreat = self.tcp_pregrasp
+                if self.shelf_lift_before_retreat_enabled and self.shelf_retreat_keep_lift_height:
+                    self.tcp_pregrasp_lifted = self.tcp_pregrasp + np.array([0.0, 0.0, self.shelf_lift_before_retreat_distance])
+                    target_retreat = self.tcp_pregrasp_lifted
+
+                if self.shelf_lift_before_retreat_enabled:
+                    dist_retreat = float(np.linalg.norm(target_retreat - self.tcp_post_grasp_lift))
+                else:
+                    dist_retreat = float(np.linalg.norm(target_retreat - self.tcp_contact))
+
+                self.get_logger().info(
+                    f"[SHELF SAFE EXTRACTION] Retirada frontal después de micro-lift:\n"
+                    f"  shelf_access_direction_mode: {self.shelf_access_direction_mode}\n"
+                    f"  approach_dir_world (objeto): {self.approach_dir_world.tolist()}\n"
+                    f"  shelf_out_dir (salida estante): {self.obtener_direccion_salida_estante().tolist()}\n"
+                    f"  tcp_contact: {self.tcp_contact.tolist()}\n"
+                    f"  tcp_pregrasp (pregrasp base): {self.tcp_pregrasp.tolist()}\n"
+                    f"  target usado (retirada final): {target_retreat.tolist()}\n"
+                    f"  ¿se mantuvo la altura elevada? (shelf_retreat_keep_lift_height): {self.shelf_retreat_keep_lift_height}\n"
+                    f"  distancia desde lift a pregrasp target: {dist_retreat:.4f} m"
+                )
+
+                if self.publish_debug_markers and self.shelf_lift_before_retreat_enabled and self.shelf_retreat_keep_lift_height:
+                    self.publicar_marker(self.tcp_pregrasp_lifted, 41, 'tcp_pregrasp_lifted', [0.0, 0.75, 1.0, 0.8], quat=self.tcp_quat, escala=0.030)
+
+                self.ejecutar_movimiento_local_con_fallback_ompl(
+                    target_pos=target_retreat,
+                    target_quat=self.tcp_quat,
+                    phase=7,
+                    label="retirada frontal tipo shelf con objeto adjunto",
+                    on_success="phase7_done",
+                    motion_mode=self.shelf_retreat_motion_mode
+                )
+        else:
+            self.get_logger().info('=== FASE 7: Retirada vertical con objeto adjunto ===')
+            target = np.array(self.tcp_contact, dtype=float)
+            target[2] += self.lift_distance
+            self.planificar_a_pose(target, self.tcp_quat, phase=7, label='retirada vertical')
 
     def ejecutar_fase_8_traslado_sobre_mesa(self) -> None:
-        self.get_logger().info('=== FASE 8: Traslado sobre la mesa ===')
         self.calcular_poses_place_mesa()
-        self.get_logger().info(f'Pose TCP sobre mesa (pre-place): {self.tcp_place_above.tolist()}')
-        self.planificar_a_pose(self.tcp_place_above, self.tcp_quat_place, phase=8, label='traslado sobre mesa')
+        place_mode_eff = self.obtener_place_geometry_mode_efectivo()
+        if place_mode_eff == 'shelf':
+            self.get_logger().info('=== FASE 8: Traslado frontal hacia estante ===')
+            self.get_logger().info("Fase 8: OMPL hacia preinsert frontal de estante destino.")
+            self.log_task_descriptor_actual()
+            self.planificar_a_pose(self.tcp_place_above, self.tcp_quat_place, phase=8, label='traslado preinsert shelf OMPL')
+        else:
+            self.get_logger().info('=== FASE 8: Traslado sobre la mesa ===')
+            self.get_logger().info("Fase 8: OMPL hacia waypoint superior de mesa central.")
+            self.get_logger().info(f'Pose TCP sobre mesa (pre-place): {self.tcp_place_above.tolist()}')
+            self.log_task_descriptor_actual()
+            self.planificar_a_pose(self.tcp_place_above, self.tcp_quat_place, phase=8, label='traslado sobre mesa')
 
     def ejecutar_fase_9_descenso_colocacion(self) -> None:
-        self.get_logger().info('=== FASE 9: Descenso a pose de colocación ===')
-        self.get_logger().info(f'Pose TCP de colocación (place): {self.tcp_place.tolist()}')
-        if self.use_cartesian_local_motions:
-            self.ejecutar_movimiento_cartesiano_local(
-                target_pos=self.tcp_place,
+        place_mode_eff = self.obtener_place_geometry_mode_efectivo()
+        if place_mode_eff == 'shelf':
+            self.get_logger().info('=== FASE 9: Inserción frontal elevada en estante ===')
+            
+            # Calcular dirección de aproximación fina basada en objeto
+            r_tcp_place = R.from_quat(self.tcp_quat_place).as_matrix()
+            approach_dir_world_place = r_tcp_place.dot(np.array([1.0, 0.0, 0.0], dtype=float))
+            approach_dir_world_place = approach_dir_world_place / np.linalg.norm(approach_dir_world_place)
+            shelf_out_dir = self.obtener_direccion_salida_estante(fallback_dir=approach_dir_world_place)
+
+            # Diagnóstico geométrico en place (inserción)
+            v_insert_raw = self.tcp_place_lifted - self.tcp_place_above
+            v_insert_norm = np.linalg.norm(v_insert_raw)
+            if v_insert_norm > 1e-6:
+                v_insert = v_insert_raw / v_insert_norm
+            else:
+                v_insert = np.array([1.0, 0.0, 0.0])
+            dot_insert = float(np.dot(v_insert, -shelf_out_dir))
+
+            self.get_logger().info(
+                f"[SHELF ACCESS DIRECTION] Place Insertion (Fase 9):\n"
+                f"  shelf_access_direction_mode: {self.shelf_access_direction_mode}\n"
+                f"  approach_dir_world_place (fino): {approach_dir_world_place.tolist()}\n"
+                f"  shelf_out_dir (salida estante): {shelf_out_dir.tolist()}\n"
+                f"  tcp_place_above/preinsert_outside_shelf: {self.tcp_place_above.tolist()}\n"
+                f"  tcp_place_lifted: {self.tcp_place_lifted.tolist()}\n"
+                f"  tcp_place: {self.tcp_place.tolist()}\n"
+                f"  dot_insert (v_insert * -shelf_out_dir): {dot_insert:.4f} (esperado ~ 1.0)"
+            )
+            # En modo estante, la aproximación frontal se realiza a la altura elevada (pose objetivo + lift)
+            self.ejecutar_movimiento_local_con_fallback_ompl(
+                target_pos=self.tcp_place_lifted,
                 target_quat=self.tcp_quat_place,
                 phase=9,
-                label="descenso cartesiano local de colocación",
-                on_success="phase9_done"
+                label="inserción frontal elevada tipo shelf",
+                on_success="phase9_shelf_insert_lifted_done",
+                motion_mode=self.shelf_insert_motion_mode
             )
         else:
-            self.planificar_a_pose(self.tcp_place, self.tcp_quat_place, phase=9, label='descenso a colocación')
+            self.get_logger().info('=== FASE 9: Descenso a pose de colocación ===')
+            self.get_logger().info(f'Pose TCP de colocación (place): {self.tcp_place.tolist()}')
+            self.get_logger().info(f'[TABLE PLACE MODE] table_place_motion_mode={self.table_place_motion_mode}')
+            
+            if self.table_place_motion_mode == 'ompl':
+                self.get_logger().info(
+                    "[TABLE PLACE MODE] OMPL seleccionado. OMPL solo cambia la planificación hacia tcp_place; "
+                    "la validación geométrica previa al detach (Fase 11) sigue siendo obligatoria e independiente del planificador usado."
+                )
+                self.planificar_a_pose(self.tcp_place, self.tcp_quat_place, phase=9, label='colocación mesa con OMPL')
+            elif self.table_place_motion_mode == 'auto':
+                self.get_logger().warn(
+                    "[TABLE PLACE MODE] Modo auto no está implementado completamente debido a restricciones asíncronas. "
+                    "Haciendo fallback a 'cartesian'. [TODO] Implementar recuperación automática a OMPL."
+                )
+                if self.use_cartesian_local_motions:
+                    self.ejecutar_movimiento_cartesiano_local(
+                        target_pos=self.tcp_place,
+                        target_quat=self.tcp_quat_place,
+                        phase=9,
+                        label="descenso cartesiano local hacia mesa central",
+                        on_success="phase9_done"
+                    )
+                else:
+                    self.planificar_a_pose(self.tcp_place, self.tcp_quat_place, phase=9, label='descenso a colocación')
+            else: # 'cartesian'
+                if self.use_cartesian_local_motions:
+                    self.ejecutar_movimiento_cartesiano_local(
+                        target_pos=self.tcp_place,
+                        target_quat=self.tcp_quat_place,
+                        phase=9,
+                        label="descenso cartesiano local hacia mesa central",
+                        on_success="phase9_done"
+                    )
+                else:
+                    self.planificar_a_pose(self.tcp_place, self.tcp_quat_place, phase=9, label='descenso a colocación')
 
     def ejecutar_fase_10_apertura_mano(self) -> None:
         self.get_logger().info('=== FASE 10: Apertura de mano para liberación ===')
+        self.hand_open_confirmed = False
         self.enviar_comando_mano(self.hand_open_positions(), phase=10)
 
     def ejecutar_fase_11_desadjuntar_y_registrar(self) -> None:
         self.get_logger().info('=== FASE 11: Desadjuntar y registrar objeto en destino/mesa ===')
+        
+        # 1. Verificar confirmación de apertura de mano si está activo
+        if self.confirm_hand_open_before_detach and not self.hand_open_confirmed:
+            self.get_logger().error(
+                "[DETACH SAFETY] Se intentó desadjuntar el objeto sin confirmación de apertura de mano. Abortando."
+            )
+            self.abortar_objeto_actual("Se intentó desadjuntar el objeto sin confirmación de apertura de mano")
+            return
+
+        # 2. Ejecutar validación geométrica del TCP antes del detach si está activo
+        if self.validate_tcp_before_detach:
+            success = self.validar_tcp_antes_de_detach()
+            if not success:
+                self.get_logger().error(
+                    "[DETACH SAFETY] Falla de validación geométrica del TCP. Abortando sin realizar el detach."
+                )
+                self.abortar_objeto_actual("Falla de validación geométrica del TCP antes de detach")
+                return
+
+        self.get_logger().info('[DETACH SAFETY] Detach permitido después de confirmación de apertura y validación de pose.')
         self.registrar_objeto_en_destino()
         self.current_phase = 11
         self.ejecutar_siguiente_fase()
 
     def ejecutar_fase_12_retirada_segura(self) -> None:
         self.get_logger().info('=== FASE 12: Retirada segura del brazo hacia posición de reposo ===')
+        place_mode_eff = self.obtener_place_geometry_mode_efectivo()
         
         if self.current_phase != 12:
             dist = float(np.linalg.norm(self.tcp_place - self.tcp_place_retreat))
@@ -2348,36 +4363,52 @@ class SingleArmFaceApproachGraspNode(Node):
             self.get_logger().info(f'distancia tcp_place a tcp_place_retreat: {dist:.4f} m')
             self.get_logger().info(f'use_split_place_retreat: {self.use_split_place_retreat}')
             self.get_logger().info(f'use_cartesian_local_motions: {self.use_cartesian_local_motions}')
+            self.get_logger().info(f'place_geometry_mode: {self.place_geometry_mode}')
+            self.get_logger().info(f'place_geometry_mode_efectivo: {place_mode_eff}')
+            self.get_logger().info(f'origen_tcp_place_retreat: {"shelf" if place_mode_eff == "shelf" else "table"}')
             self.get_logger().info('------------------------------')
             
-        if self.use_cartesian_local_motions:
+        if place_mode_eff == 'shelf' or self.use_cartesian_local_motions:
             if not self.retreat_done:
-                self.ejecutar_movimiento_cartesiano_local(
-                    target_pos=self.tcp_place_retreat,
-                    target_quat=self.tcp_quat_place,
-                    phase=12,
-                    label="retirada cartesiana local desde objeto colocado",
-                    on_success="phase12_retreat_done",
-                    allow_release_contacts=True
-                )
+                if place_mode_eff == 'shelf':
+                    label_str = "retirada frontal desde estante destino"
+                    self.ejecutar_movimiento_local_con_fallback_ompl(
+                        target_pos=self.tcp_place_retreat,
+                        target_quat=self.tcp_quat_place,
+                        phase=12,
+                        label=label_str,
+                        on_success="phase12_retreat_done",
+                        motion_mode=self.shelf_post_place_retreat_motion_mode,
+                        allow_release_contacts=True
+                    )
+                else:
+                    label_str = "retirada cartesiana lateral desde objeto colocado en mesa central"
+                    self.ejecutar_movimiento_cartesiano_local(
+                        target_pos=self.tcp_place_retreat,
+                        target_quat=self.tcp_quat_place,
+                        phase=12,
+                        label=label_str,
+                        on_success="phase12_retreat_done",
+                        allow_release_contacts=True
+                    )
             else:
                 self.get_logger().info('Fase 12 - Parte 2: Moviendo a posición de reposo neutral...')
                 if self.enable_state_validity_diagnostics:
                     valid_curr = self.verificar_estado_actual("antes de home articular Fase 12")
                     if self.abort_on_invalid_state_before_motion and not valid_curr:
                         self.get_logger().error("Abortando: estado actual inválido antes de iniciar home articular de Fase 12.")
-                        rclpy.shutdown()
+                        self.abortar_objeto_actual("estado actual inválido antes de iniciar home articular de Fase 12")
                         return
                 names = self.cfg.arm_joints
                 positions = [0.0] * len(self.cfg.arm_joints)
                 self.get_logger().info(f'Planificando articulaciones hacia pose de reposo neutral ("home_{self.cfg.side}")...')
-                self.enviar_meta_articular_brazo(names, positions, phase=12)
+                self.enviar_meta_articular_brazo(names, positions, phase=12, label=f"reposo neutral (home_{self.cfg.side}) - Fase 12")
         else:
             if self.use_split_place_retreat:
                 if not self.retreat_done:
                     # Primero, retiramos lateralmente hacia afuera
                     self.get_logger().info('Fase 12 - Parte 1: Retirada lateral hacia afuera (alejándose del objeto)...')
-                    self.planificar_a_pose(self.tcp_place_retreat, self.tcp_quat_place, phase=12, label='retirada lateral de colocación')
+                    self.planificar_a_pose(self.tcp_place_retreat, self.tcp_quat_place, phase=12, label='retirada cartesiana lateral desde objeto colocado en mesa central')
                 else:
                     # Segundo, vamos a home
                     self.get_logger().info('Fase 12 - Parte 2: Moviendo a posición de reposo neutral...')
@@ -2385,12 +4416,12 @@ class SingleArmFaceApproachGraspNode(Node):
                         valid_curr = self.verificar_estado_actual("antes de home articular Fase 12")
                         if self.abort_on_invalid_state_before_motion and not valid_curr:
                             self.get_logger().error("Abortando: estado actual inválido antes de iniciar home articular de Fase 12.")
-                            rclpy.shutdown()
+                            self.abortar_objeto_actual("estado actual inválido antes de iniciar home articular de Fase 12")
                             return
                     names = self.cfg.arm_joints
                     positions = [0.0] * len(self.cfg.arm_joints)
                     self.get_logger().info(f'Planificando articulaciones hacia pose de reposo neutral ("home_{self.cfg.side}")...')
-                    self.enviar_meta_articular_brazo(names, positions, phase=12)
+                    self.enviar_meta_articular_brazo(names, positions, phase=12, label=f"reposo neutral (home_{self.cfg.side}) - Fase 12 (tras retirada)")
             else:
                 # Ir directamente a home
                 self.get_logger().info('Fase 12: Moviendo directamente a posición de reposo neutral (bypasseando retirada lateral)...')
@@ -2398,12 +4429,12 @@ class SingleArmFaceApproachGraspNode(Node):
                     valid_curr = self.verificar_estado_actual("antes de home articular Fase 12")
                     if self.abort_on_invalid_state_before_motion and not valid_curr:
                         self.get_logger().error("Abortando: estado actual inválido antes de iniciar home articular de Fase 12.")
-                        rclpy.shutdown()
+                        self.abortar_objeto_actual("estado actual inválido antes de iniciar home articular de Fase 12")
                         return
                 names = self.cfg.arm_joints
                 positions = [0.0] * len(self.cfg.arm_joints)
                 self.get_logger().info(f'Planificando articulaciones hacia pose de reposo neutral ("home_{self.cfg.side}")...')
-                self.enviar_meta_articular_brazo(names, positions, phase=12)
+                self.enviar_meta_articular_brazo(names, positions, phase=12, label=f"reposo neutral (home_{self.cfg.side}) - Fase 12 (directo)")
 
     def ejecutar_siguiente_fase(self) -> None:
         if self.current_phase == 1:
@@ -2439,13 +4470,32 @@ class SingleArmFaceApproachGraspNode(Node):
                 )
                 self.get_logger().info(f'Pose final esperada: {self.object_position.tolist()} | Yaw final esperado: {math.degrees(self.object_yaw_rad):.2f}°')
                 self.get_logger().info('Confirmación de objeto registrado en mundo.')
-                rclpy.shutdown()
+                if self.enable_object_queue and self.active_queued_object is not None:
+                    self.active_queued_object.processed = True
+                    self.active_queued_object.final_position = self.place_object_center.copy()
+                    self.active_queued_object.final_yaw_rad = self.target_object_yaw_rad
+                    self.active_queued_object.final_status = "processed"
+                    self.get_logger().info(f"[OBJECT QUEUE] Objeto '{self.active_queued_object.frame}' procesado correctamente.")
+                    self.iniciar_siguiente_objeto_de_cola()
+                else:
+                    rclpy.shutdown()
             else:
                 self.get_logger().info('Pick and place parcial completado: objeto colocado en mesa y registrado en escena.')
-                rclpy.shutdown()
+                if self.enable_object_queue and self.active_queued_object is not None:
+                    self.active_queued_object.processed = True
+                    self.active_queued_object.final_position = self.place_object_center.copy()
+                    self.active_queued_object.final_yaw_rad = self.target_object_yaw_rad
+                    self.active_queued_object.final_status = "processed"
+                    self.get_logger().info(f"[OBJECT QUEUE] Objeto '{self.active_queued_object.frame}' procesado correctamente.")
+                    self.iniciar_siguiente_objeto_de_cola()
+                else:
+                    rclpy.shutdown()
         else:
             self.get_logger().error(f'Fase desconocida: {self.current_phase}')
-            rclpy.shutdown()
+            if self.enable_object_queue:
+                self.abortar_objeto_actual(f"Fase desconocida: {self.current_phase}")
+            else:
+                rclpy.shutdown()
 
 
 def main(args=None) -> None:
@@ -2460,7 +4510,8 @@ def main(args=None) -> None:
         pass
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == '__main__':
