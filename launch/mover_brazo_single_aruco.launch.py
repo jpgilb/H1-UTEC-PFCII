@@ -114,7 +114,7 @@ def generate_launch_description():
         # ---------------------------------------------------------------------
         DeclareLaunchArgument(
             'object_pose_reference',
-            default_value='top_face_center',
+            default_value='center',
             description='Referencia de la pose del objeto (center o top_face_center)'
         ),
 
