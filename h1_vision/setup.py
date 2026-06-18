@@ -25,7 +25,9 @@ setup(
     entry_points={
         'console_scripts': [
             'object_tracker = h1_vision.object_tracker:main',
-            'depth_test = h1_vision.depth_test:main'
+            'depth_test = h1_vision.depth_test:main',
+            'sphere_tracker = h1_vision.sphere_tracker:main',
+            'aruco_tracker = h1_vision.aruco_tracker:main'
         ],
     },
 )

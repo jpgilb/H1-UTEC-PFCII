@@ -1,4 +1,3 @@
-
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import Image, CameraInfo
@@ -6,10 +5,99 @@ from cv_bridge import CvBridge
 import cv2
 import numpy as np
 import time
+from geometry_msgs.msg import TransformStamped, PoseStamped
+from tf2_ros import TransformBroadcaster
+from collections import deque
 
 class VisionNode(Node):
     def __init__(self):
         super().__init__('vision_node')
+        
+        # Declarar y cargar parámetros
+        self.declare_parameter('camera_frame', 'camera_depth_optical_frame')
+        self.declare_parameter('object_frame', 'objeto_cubo')
+        self.declare_parameter('object_dimension', 0.055)
+        self.declare_parameter('publish_tf', True)
+        self.declare_parameter('publish_pose', True)
+        self.declare_parameter('pose_topic', '/vision/objeto_cubo/pose')
+        
+        # Nuevos parámetros para modo debug, trackbars y FPS
+        self.declare_parameter('debug_visual', False)
+        self.declare_parameter('use_gui_trackbars', False)
+        self.declare_parameter('show_hsv_mask_debug', False)
+        self.declare_parameter('show_depth_mask_debug', False)
+        self.declare_parameter('show_debug_overlay', False)
+        self.declare_parameter('expected_camera_fps', 30.0)
+        self.declare_parameter('fps_window_size', 30)
+        self.declare_parameter('h_min', 50)
+        self.declare_parameter('s_min', 100)
+        self.declare_parameter('v_min', 0)
+        self.declare_parameter('h_max', 132)
+        self.declare_parameter('s_max', 255)
+        self.declare_parameter('v_max', 255)
+
+        self.camera_frame = str(self.get_parameter('camera_frame').value).strip()
+        self.object_frame = str(self.get_parameter('object_frame').value).strip()
+        self.object_dimension = float(self.get_parameter('object_dimension').value)
+        self.publish_tf = bool(self.get_parameter('publish_tf').value)
+        self.publish_pose = bool(self.get_parameter('publish_pose').value)
+        self.pose_topic = str(self.get_parameter('pose_topic').value).strip()
+        
+        self.debug_visual = bool(self.get_parameter('debug_visual').value)
+        self.use_gui_trackbars = bool(self.get_parameter('use_gui_trackbars').value)
+        self.show_hsv_mask_debug = bool(self.get_parameter('show_hsv_mask_debug').value)
+        self.show_depth_mask_debug = bool(self.get_parameter('show_depth_mask_debug').value)
+        self.show_debug_overlay = bool(self.get_parameter('show_debug_overlay').value)
+        self.expected_camera_fps = float(self.get_parameter('expected_camera_fps').value)
+        self.fps_window_size = int(self.get_parameter('fps_window_size').value)
+        self.h_min = int(self.get_parameter('h_min').value)
+        self.s_min = int(self.get_parameter('s_min').value)
+        self.v_min = int(self.get_parameter('v_min').value)
+        self.h_max = int(self.get_parameter('h_max').value)
+        self.s_max = int(self.get_parameter('s_max').value)
+        self.v_max = int(self.get_parameter('v_max').value)
+
+        # Regla de activación del modo debug visual
+        if self.debug_visual:
+            self.use_gui_trackbars = True
+            self.show_hsv_mask_debug = True
+            self.show_depth_mask_debug = True
+            self.show_debug_overlay = True
+
+        # Validación
+        if self.object_dimension <= 0.0:
+            raise ValueError("object_dimension debe ser mayor que 0.0")
+        if self.expected_camera_fps <= 0.0:
+            raise ValueError("expected_camera_fps debe ser mayor que 0.0")
+        if self.fps_window_size <= 0:
+            raise ValueError("fps_window_size debe ser mayor que 0")
+
+        # Nombres de ventana estandarizados
+        self.main_window_name = self.object_frame
+        self.hsv_control_window_name = f"Ajuste HSV - {self.object_frame}"
+
+        # Estado interno de FPS
+        self.frame_timestamps = deque(maxlen=self.fps_window_size)
+        self.last_processing_time_ms = 0.0
+        self.camera_fps_estimate = 0.0
+
+        # Publicadores y Broadcaster
+        self.tf_broadcaster = TransformBroadcaster(self)
+        self.pose_pub = self.create_publisher(PoseStamped, self.pose_topic, 10)
+        self.last_pose_log_time = 0.0
+
+        # Log al iniciar en español
+        self.get_logger().info(
+            f"[DETECTOR DE CUBO INICIALIZADO]\n"
+            f"  Frame de cámara: '{self.camera_frame}'\n"
+            f"  Frame del objeto: '{self.object_frame}'\n"
+            f"  Dimensión del objeto [m]: {self.object_dimension:.4f}\n"
+            f"  Publicar TF: {self.publish_tf}\n"
+            f"  Publicar PoseStamped: {self.publish_pose}\n"
+            f"  Tópico de pose: '{self.pose_topic}'\n"
+            f"  Debug visual: {self.debug_visual}\n"
+            f"  Trackbars HSV: {self.use_gui_trackbars}"
+        )
         
         # Suscripciones
         self.subscription_color = self.create_subscription(Image, '/camera/color/image_raw', self.image_callback, 10)
@@ -29,20 +117,118 @@ class VisionNode(Node):
         self.alpha_pos = 0.2
         self.alpha_normal = 0.1   # Ultra-lento para congelar la inclinación
         self.alpha_yaw = 0.4
-        
         self.last_time = time.time()
         
-        cv2.namedWindow("Control")
-        self.setup_trackbars()
-        self.get_logger().info("Motor de Pose Anclado (Fijo en Mesa) con Debug Visual Activo")
+        if self.use_gui_trackbars:
+            self.setup_trackbars()
+        self.get_logger().info("Detector de cubo listo. Publicacion TF/Pose activa.")
 
     def setup_trackbars(self):
-        cv2.createTrackbar("Min H", "Control", 50, 179, lambda x: None)
-        cv2.createTrackbar("Min S", "Control", 100, 255, lambda x: None)
-        cv2.createTrackbar("Min V", "Control", 0, 255, lambda x: None)
-        cv2.createTrackbar("Max H", "Control", 132, 179, lambda x: None)
-        cv2.createTrackbar("Max S", "Control", 255, 255, lambda x: None)
-        cv2.createTrackbar("Max V", "Control", 255, 255, lambda x: None)
+        cv2.namedWindow(self.hsv_control_window_name)
+        cv2.createTrackbar("Min H", self.hsv_control_window_name, self.h_min, 179, lambda x: None)
+        cv2.createTrackbar("Min S", self.hsv_control_window_name, self.s_min, 255, lambda x: None)
+        cv2.createTrackbar("Min V", self.hsv_control_window_name, self.v_min, 255, lambda x: None)
+        cv2.createTrackbar("Max H", self.hsv_control_window_name, self.h_max, 179, lambda x: None)
+        cv2.createTrackbar("Max S", self.hsv_control_window_name, self.s_max, 255, lambda x: None)
+        cv2.createTrackbar("Max V", self.hsv_control_window_name, self.v_max, 255, lambda x: None)
+
+    def stamp_to_seconds(self, stamp):
+        return float(stamp.sec) + float(stamp.nanosec) * 1e-9
+
+    def update_fps_estimate(self, msg_stamp, processing_time_ms):
+        timestamp = self.stamp_to_seconds(msg_stamp)
+        if timestamp <= 0.0:
+            timestamp = time.perf_counter()
+            
+        if len(self.frame_timestamps) == 0 or timestamp > self.frame_timestamps[-1]:
+            self.frame_timestamps.append(timestamp)
+            
+        if len(self.frame_timestamps) >= 2:
+            duration = self.frame_timestamps[-1] - self.frame_timestamps[0]
+            if duration > 1e-6:
+                fps = (len(self.frame_timestamps) - 1) / duration
+            else:
+                fps = 0.0
+        else:
+            fps = 0.0
+            
+        self.camera_fps_estimate = min(fps, self.expected_camera_fps)
+        self.last_processing_time_ms = processing_time_ms
+
+    def publish_cube_tf_and_pose(self, face_center, normal, quat, stamp, source_frame=""):
+        if face_center is None or normal is None or quat is None:
+            return
+
+        face_center = np.array(face_center, dtype=float)
+        normal = np.array(normal, dtype=float)
+        quat = np.array(quat, dtype=float)
+
+        if np.any(np.isnan(face_center)) or np.any(np.isinf(face_center)):
+            return
+        if np.any(np.isnan(normal)) or np.any(np.isinf(normal)):
+            return
+        if np.any(np.isnan(quat)) or np.any(np.isinf(quat)):
+            return
+
+        frame_id = self.camera_frame if self.camera_frame else source_frame
+        if not frame_id:
+            self.get_logger().warn("[DETECTOR CUBO] Frame vacío; se omite publicación TF/Pose.")
+            return
+
+        norm_normal = np.linalg.norm(normal)
+        if norm_normal < 1e-6:
+            return
+        normal = normal / norm_normal
+
+        norm_quat = np.linalg.norm(quat)
+        if norm_quat < 1e-6:
+            quat = np.array([0.0, 0.0, 0.0, 1.0])
+        else:
+            quat = quat / norm_quat
+
+        # Calcular el centro geométrico del cubo
+        cube_center = face_center - normal * (self.object_dimension / 2.0)
+
+        # Publicar TF
+        if self.publish_tf:
+            t = TransformStamped()
+            t.header.stamp = stamp
+            t.header.frame_id = frame_id
+            t.child_frame_id = self.object_frame
+            t.transform.translation.x = cube_center[0]
+            t.transform.translation.y = cube_center[1]
+            t.transform.translation.z = cube_center[2]
+            t.transform.rotation.x = quat[0]
+            t.transform.rotation.y = quat[1]
+            t.transform.rotation.z = quat[2]
+            t.transform.rotation.w = quat[3]
+            self.tf_broadcaster.sendTransform(t)
+
+        # Publicar Pose
+        if self.publish_pose:
+            pose_msg = PoseStamped()
+            pose_msg.header.stamp = stamp
+            pose_msg.header.frame_id = frame_id
+            pose_msg.pose.position.x = cube_center[0]
+            pose_msg.pose.position.y = cube_center[1]
+            pose_msg.pose.position.z = cube_center[2]
+            pose_msg.pose.orientation.x = quat[0]
+            pose_msg.pose.orientation.y = quat[1]
+            pose_msg.pose.orientation.z = quat[2]
+            pose_msg.pose.orientation.w = quat[3]
+            self.pose_pub.publish(pose_msg)
+
+        # Throttled logging (1 por segundo)
+        now = time.time()
+        if now - self.last_pose_log_time >= 1.0:
+            self.last_pose_log_time = now
+            self.get_logger().info(
+                f"POSE CUBO -> centro_cara={face_center.tolist()} "
+                f"centro_cubo={cube_center.tolist()} "
+                f"normal={normal.tolist()} "
+                f"frame={frame_id} "
+                f"objeto={self.object_frame}"
+            )
 
     def camera_info_callback(self, msg):
         self.fx, self.fy, self.cx, self.cy = msg.k[0], msg.k[4], msg.k[2], msg.k[5]
@@ -87,16 +273,28 @@ class VisionNode(Node):
     def image_callback(self, msg):
         if not self.intrinsics_loaded or self.latest_depth_image is None: return
         
+        start_proc = time.perf_counter()
         try:
             cv_image = self.bridge.imgmsg_to_cv2(msg, "bgr8")
             
             # Segmentación HSV
-            l_h, l_s, l_v = cv2.getTrackbarPos("Min H", "Control"), cv2.getTrackbarPos("Min S", "Control"), cv2.getTrackbarPos("Min V", "Control")
-            u_h, u_s, u_v = cv2.getTrackbarPos("Max H", "Control"), cv2.getTrackbarPos("Max S", "Control"), cv2.getTrackbarPos("Max V", "Control")
+            if self.use_gui_trackbars:
+                l_h = cv2.getTrackbarPos("Min H", self.hsv_control_window_name)
+                l_s = cv2.getTrackbarPos("Min S", self.hsv_control_window_name)
+                l_v = cv2.getTrackbarPos("Min V", self.hsv_control_window_name)
+                u_h = cv2.getTrackbarPos("Max H", self.hsv_control_window_name)
+                u_s = cv2.getTrackbarPos("Max S", self.hsv_control_window_name)
+                u_v = cv2.getTrackbarPos("Max V", self.hsv_control_window_name)
+            else:
+                l_h, l_s, l_v = self.h_min, self.s_min, self.v_min
+                u_h, u_s, u_v = self.h_max, self.s_max, self.v_max
             hsv = cv2.cvtColor(cv_image, cv2.COLOR_BGR2HSV)
             mask = cv2.inRange(hsv, np.array([l_h, l_s, l_v]), np.array([u_h, u_s, u_v]))
             mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((5,5), np.uint8))
             contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            
+            if self.show_hsv_mask_debug:
+                cv2.imshow(f"{self.object_frame} - mascara HSV", mask)
             
             if contours:
                 best_cnt = max(contours, key=cv2.contourArea)
@@ -151,20 +349,38 @@ class VisionNode(Node):
                             self.last_tvec = (1 - self.alpha_pos) * self.last_tvec + self.alpha_pos * mean_center
                             quat = self.rotation_matrix_to_quaternion(R_final)
                             
-                            # Logs y Ejes
-                            self.get_logger().info(f"POSE ANCLADA -> P: [{self.last_tvec[0]:.3f}, {self.last_tvec[1]:.3f}, {self.last_tvec[2]:.3f}] | Q: [{quat[0]:.3f}, {quat[1]:.3f}, {quat[2]:.3f}, {quat[3]:.3f}]")
+                            # Publicar TF y Pose
+                            self.publish_cube_tf_and_pose(
+                                face_center=self.last_tvec,
+                                normal=self.stable_normal,
+                                quat=quat,
+                                stamp=msg.header.stamp,
+                                source_frame=msg.header.frame_id
+                            )
+                            
                             rvec_draw, _ = cv2.Rodrigues(R_final)
                             cv2.drawFrameAxes(cv_image, np.array([[self.fx, 0, self.cx], [0, self.fy, self.cy], [0, 0, 1]]), None, rvec_draw, self.last_tvec, 0.05)
-
-            # Dashboard
-            fps = 1.0 / (time.time() - self.last_time)
-            self.last_time = time.time()
-            cv2.setWindowTitle("Anchored Pose", f"Anchored Pose - FPS: {fps:.1f}")
-            cv2.imshow("Anchored Pose", cv_image)
+                            
+                            if self.show_debug_overlay:
+                                cube_center_pos = self.last_tvec - self.stable_normal * (self.object_dimension / 2.0)
+                                cv2.putText(cv_image, f"Centro cara: {[round(c, 3) for c in self.last_tvec.tolist()]} m", (15, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+                                cv2.putText(cv_image, f"Centro cubo: {[round(c, 3) for c in cube_center_pos.tolist()]} m", (15, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+                                cv2.putText(cv_image, f"Profundidad: {self.last_tvec[2]:.3f} m", (15, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+                                cv2.putText(cv_image, f"FPS camara: {self.camera_fps_estimate:.1f}", (15, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+                                cv2.putText(cv_image, f"Tiempo procesamiento: {self.last_processing_time_ms:.1f} ms", (15, 110), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+            
+            # Actualizar FPS
+            processing_time_ms = (time.perf_counter() - start_proc) * 1000.0
+            self.update_fps_estimate(msg.header.stamp, processing_time_ms)
+            
+            # Dashboard principal
+            title = f"{self.object_frame} - FPS camara: {self.camera_fps_estimate:.1f} | Proc: {self.last_processing_time_ms:.1f} ms"
+            cv2.imshow(self.main_window_name, cv_image)
+            cv2.setWindowTitle(self.main_window_name, title)
             cv2.waitKey(1)
             
         except Exception as e:
-            self.get_logger().error(f"Error: {e}")
+            self.get_logger().error(f"Error en image_callback: {e}")
 
 def main(args=None):
     rclpy.init(args=args)
