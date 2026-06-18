@@ -159,6 +159,8 @@ class SingleArmFaceApproachGraspNode(Node):
         self.declare_parameter('mujoco_disable_planning_collisions', True)
         self.declare_parameter('mujoco_split_approach', True)
         self.declare_parameter('mujoco_approach_steps', 3)
+        self.declare_parameter('mujoco_lift_steps', 3)
+        self.declare_parameter('mujoco_place_descent_steps', 5)
         self.declare_parameter('mujoco_wait_after_arm_motion_sec', 3.0)
 
         # --------------------------
@@ -225,6 +227,8 @@ class SingleArmFaceApproachGraspNode(Node):
         )
         self.mujoco_split_approach = bool(self.get_parameter('mujoco_split_approach').value)
         self.mujoco_approach_steps = int(self.get_parameter('mujoco_approach_steps').value)
+        self.mujoco_lift_steps = int(self.get_parameter('mujoco_lift_steps').value)
+        self.mujoco_place_descent_steps = int(self.get_parameter('mujoco_place_descent_steps').value)
         self.mujoco_wait_after_arm_motion_sec = float(
             self.get_parameter('mujoco_wait_after_arm_motion_sec').value
         )
@@ -277,6 +281,10 @@ class SingleArmFaceApproachGraspNode(Node):
         # Estado para aproximación frontal segmentada en MuJoCo
         self.approach_substep_index = 0
         self.approach_substep_targets = []
+        self.lift_substep_index = 0
+        self.lift_substep_targets = []
+        self.place_descent_substep_index = 0
+        self.place_descent_substep_targets = []
 
         self.last_joint_state: Optional[JointState] = None
         self.pre_close_effort: Optional[Dict[str, float]] = None
@@ -1074,19 +1082,43 @@ class SingleArmFaceApproachGraspNode(Node):
 
         if res_ik.error_code.val != 1:
             self.get_logger().error(
-                f'IK con colisiones falló en fase {phase} ({label}). Código: {res_ik.error_code.val}. '
-                'No se ejecuta fallback sin colisiones para evitar atravesar el objeto.'
+                f'IK con colisiones falló en fase {phase} ({label}). Código: {res_ik.error_code.val}.'
             )
 
-            if self.diagnostic_ik_without_collisions:
-                diag = self.get_ik(pos, quat, avoid_collisions=False)
+            usar_fallback_mujoco = (
+                self.mujoco_bridge_mode
+                and self.mujoco_disable_planning_collisions
+                and phase in [7, 8, 70, 9, 90]
+            )
+
+            if usar_fallback_mujoco:
                 self.get_logger().warn(
-                    f'Diagnóstico IK sin colisiones: código {diag.error_code.val}. '
-                    'Si aquí funciona, el problema es geométrico/colisión, no cinemático.'
+                    f'[MuJoCo bridge] Fallback IK sin colisiones habilitado para fase {phase} '
+                    f'({label}). Esta ruta se usa solo para validación cinemática en MuJoCo.'
+                )
+                res_ik = self.get_ik(pos, quat, avoid_collisions=False)
+
+                if res_ik.error_code.val != 1:
+                    self.get_logger().error(
+                        f'IK fallback sin colisiones también falló en fase {phase} ({label}). '
+                        f'Código: {res_ik.error_code.val}.'
+                    )
+                    rclpy.shutdown()
+                    return
+            else:
+                self.get_logger().error(
+                    'No se ejecuta fallback sin colisiones para evitar atravesar el objeto.'
                 )
 
-            rclpy.shutdown()
-            return
+                if self.diagnostic_ik_without_collisions:
+                    diag = self.get_ik(pos, quat, avoid_collisions=False)
+                    self.get_logger().warn(
+                        f'Diagnóstico IK sin colisiones: código {diag.error_code.val}. '
+                        'Si aquí funciona, el problema es geométrico/colisión, no cinemático.'
+                    )
+
+                rclpy.shutdown()
+                return
 
         names, positions = self.filtrar_joints_brazo(res_ik)
         self.enviar_meta_articular_brazo(names, positions, phase=phase)
@@ -1116,6 +1148,14 @@ class SingleArmFaceApproachGraspNode(Node):
 
             if self.current_phase == 40:
                 self.ejecutar_siguiente_subpaso_aproximacion()
+                return
+
+            if self.current_phase == 70:
+                self.ejecutar_siguiente_subpaso_lift()
+                return
+
+            if self.current_phase == 90:
+                self.ejecutar_siguiente_subpaso_place_descent()
                 return
 
             if self.current_phase == 12 and self.use_split_place_retreat and not self.retreat_done:
@@ -1441,15 +1481,65 @@ class SingleArmFaceApproachGraspNode(Node):
             rclpy.shutdown()
             return
 
-        self.adjuntar_objeto_al_tcp()
+        if self.mujoco_bridge_mode and self.mujoco_disable_planning_collisions:
+            self.get_logger().warn(
+                '[MuJoCo bridge] Attach real en PlanningScene omitido. '
+                'Se conserva solo validación cinemática para fases posteriores.'
+            )
+        else:
+            self.adjuntar_objeto_al_tcp()
+
         self.current_phase = 6
         self.ejecutar_siguiente_fase()
 
     def ejecutar_fase_7_retirada_vertical(self) -> None:
         self.get_logger().info('=== FASE 7: Retirada vertical con objeto adjunto ===')
+
+        start = np.array(self.tcp_contact, dtype=float)
         target = np.array(self.tcp_contact, dtype=float)
         target[2] += self.lift_distance
+
+        if self.mujoco_bridge_mode and self.mujoco_lift_steps > 1:
+            self.lift_substep_index = 0
+            self.lift_substep_targets = []
+
+            for i in range(1, self.mujoco_lift_steps + 1):
+                alpha = i / float(self.mujoco_lift_steps)
+                subtarget = start + alpha * (target - start)
+                self.lift_substep_targets.append(subtarget)
+
+            self.get_logger().info(
+                f'[MuJoCo bridge] Retirada vertical segmentada activada: '
+                f'{self.mujoco_lift_steps} pasos. Altura total={self.lift_distance:.4f} m'
+            )
+
+            self.ejecutar_siguiente_subpaso_lift()
+            return
+
         self.planificar_a_pose(target, self.tcp_quat, phase=7, label='retirada vertical')
+
+    def ejecutar_siguiente_subpaso_lift(self) -> None:
+        if self.lift_substep_index >= len(self.lift_substep_targets):
+            self.get_logger().info('[MuJoCo bridge] Retirada vertical segmentada completada.')
+            self.current_phase = 7
+            self.ejecutar_siguiente_fase()
+            return
+
+        target = self.lift_substep_targets[self.lift_substep_index]
+        self.lift_substep_index += 1
+
+        self.get_logger().info(
+            f'[MuJoCo bridge] Retirada vertical subpaso '
+            f'{self.lift_substep_index}/{len(self.lift_substep_targets)}: {target.tolist()}'
+        )
+
+        self.current_phase = 70
+        self.planificar_a_pose(
+            target,
+            self.tcp_quat,
+            phase=70,
+            label=f'retirada vertical subpaso {self.lift_substep_index}'
+        )
 
     def ejecutar_fase_8_traslado_sobre_mesa(self) -> None:
         self.get_logger().info('=== FASE 8: Traslado sobre la mesa ===')
@@ -1460,7 +1550,52 @@ class SingleArmFaceApproachGraspNode(Node):
     def ejecutar_fase_9_descenso_colocacion(self) -> None:
         self.get_logger().info('=== FASE 9: Descenso a pose de colocación ===')
         self.get_logger().info(f'Pose TCP de colocación (place): {self.tcp_place.tolist()}')
+
+        start = np.array(self.tcp_place_above, dtype=float)
+        target = np.array(self.tcp_place, dtype=float)
+
+        if self.mujoco_bridge_mode and self.mujoco_place_descent_steps > 1:
+            self.place_descent_substep_index = 0
+            self.place_descent_substep_targets = []
+
+            for i in range(1, self.mujoco_place_descent_steps + 1):
+                alpha = i / float(self.mujoco_place_descent_steps)
+                subtarget = start + alpha * (target - start)
+                self.place_descent_substep_targets.append(subtarget)
+
+            descent_distance = abs(float(start[2] - target[2]))
+            self.get_logger().info(
+                f'[MuJoCo bridge] Descenso de colocación segmentado activado: '
+                f'{self.mujoco_place_descent_steps} pasos. Descenso total={descent_distance:.4f} m'
+            )
+
+            self.ejecutar_siguiente_subpaso_place_descent()
+            return
+
         self.planificar_a_pose(self.tcp_place, self.tcp_quat_place, phase=9, label='descenso a colocación')
+
+    def ejecutar_siguiente_subpaso_place_descent(self) -> None:
+        if self.place_descent_substep_index >= len(self.place_descent_substep_targets):
+            self.get_logger().info('[MuJoCo bridge] Descenso de colocación segmentado completado.')
+            self.current_phase = 9
+            self.ejecutar_siguiente_fase()
+            return
+
+        target = self.place_descent_substep_targets[self.place_descent_substep_index]
+        self.place_descent_substep_index += 1
+
+        self.get_logger().info(
+            f'[MuJoCo bridge] Descenso de colocación subpaso '
+            f'{self.place_descent_substep_index}/{len(self.place_descent_substep_targets)}: {target.tolist()}'
+        )
+
+        self.current_phase = 90
+        self.planificar_a_pose(
+            target,
+            self.tcp_quat_place,
+            phase=90,
+            label=f'descenso de colocación subpaso {self.place_descent_substep_index}'
+        )
 
     def ejecutar_fase_10_apertura_mano(self) -> None:
         self.get_logger().info('=== FASE 10: Apertura de mano para liberación ===')
@@ -1469,6 +1604,13 @@ class SingleArmFaceApproachGraspNode(Node):
     def ejecutar_fase_11_desadjuntar_y_registrar(self) -> None:
         self.get_logger().info('=== FASE 11: Desadjuntar y registrar objeto en destino/mesa ===')
         self.registrar_objeto_en_destino()
+        if self.mujoco_bridge_mode and self.mujoco_disable_planning_collisions:
+            self.get_logger().warn(
+                '[MuJoCo bridge] PlanningScene limpiada después del registro lógico '
+                'del objeto para no bloquear la retirada segura.'
+            )
+            self.limpiar_escena()
+
         self.current_phase = 11
         self.ejecutar_siguiente_fase()
 
