@@ -1,0 +1,333 @@
+<mujoco model="H1_2_stationary_part_sequencing">
+
+  <!-- Modelo base del robot H1-2 con manos -->
+  <include file="h1_2_stationary_controlled.xml"/>
+
+  <compiler angle="radian" autolimits="true"/>
+
+  <option timestep="0.001"
+        gravity="0 0 -9.81"
+        integrator="implicitfast"
+        solver="Newton"
+        iterations="80"
+        tolerance="1e-8"
+        cone="elliptic"/>
+
+  <statistic center="0.75 0 1.15" extent="2.2"/>
+
+  <visual>
+    <headlight diffuse="0.6 0.6 0.6"
+               ambient="0.35 0.35 0.35"
+               specular="0.1 0.1 0.1"/>
+    <rgba haze="0.15 0.20 0.25 1"/>
+    <global azimuth="-135" elevation="-25"/>
+  </visual>
+
+  <asset>
+    <!-- Materiales -->
+    <texture type="skybox"
+             builtin="flat"
+             rgb1="0.02 0.02 0.02"
+             rgb2="0.02 0.02 0.02"
+             width="512"
+             height="3072"/>
+
+    <texture type="2d"
+             name="groundplane_tex"
+             builtin="checker"
+             mark="edge"
+             rgb1="0.22 0.25 0.28"
+             rgb2="0.12 0.14 0.16"
+             markrgb="0.8 0.8 0.8"
+             width="300"
+             height="300"/>
+
+    <material name="groundplane_mat"
+              texture="groundplane_tex"
+              texuniform="true"
+              texrepeat="6 6"
+              reflectance="0.15"/>
+
+    <material name="table_mat" rgba="0.55 0.55 0.55 1"/>
+    <material name="shelf_mat" rgba="0.35 0.35 0.38 1"/>
+    <material name="slot_mat" rgba="0.10 0.10 0.10 1"/>
+    <material name="cube_red_mat" rgba="0.90 0.10 0.08 1"/>
+    <material name="cube_blue_mat" rgba="0.08 0.20 0.90 1"/>
+    <material name="sphere_green_mat" rgba="0.10 0.70 0.20 1"/>
+    <material name="target_mat" rgba="1.00 0.80 0.10 0.35"/>
+  </asset>
+
+  <worldbody>
+
+    <!-- Iluminación -->
+    <light name="main_light"
+           pos="0.3 0 2.8"
+           dir="0 0 -1"
+           directional="true"
+           diffuse="0.8 0.8 0.8"/>
+
+    <light name="front_light"
+           pos="1.4 0 1.8"
+           dir="-1 0 -0.4"
+           directional="true"
+           diffuse="0.35 0.35 0.35"/>
+
+    <!-- Piso -->
+    <geom name="seq_floor"
+          type="plane"
+          size="3.0 3.0 0.05"
+          material="groundplane_mat"
+          condim="3"
+          friction="0.9 0.02 0.001"/>
+
+    <!-- ========================================================= -->
+    <!-- Estación de secuenciación: estante izquierdo - mesa - estante derecho -->
+    <!-- Sistema de referencia asumido:
+         X positivo: frente del robot.
+         Y positivo: lado izquierdo del robot.
+         Z positivo: vertical.
+    -->
+    <!-- ========================================================= -->
+
+    <!-- Mesa central de transferencia -->
+    <body name="transfer_table" pos="0.72 0 0.72">
+      <!-- tablero -->
+      <geom name="transfer_table_top"
+            type="box"
+            size="0.42 0.34 0.035"
+            pos="0 0 0"
+            material="table_mat"
+            condim="3"
+            friction="0.95 0.03 0.001"/>
+
+      <!-- patas -->
+      <geom name="transfer_table_leg_fl"
+            type="box"
+            size="0.025 0.025 0.34"
+            pos="0.36 0.28 -0.34"
+            material="table_mat"/>
+      <geom name="transfer_table_leg_fr"
+            type="box"
+            size="0.025 0.025 0.34"
+            pos="0.36 -0.28 -0.34"
+            material="table_mat"/>
+      <geom name="transfer_table_leg_rl"
+            type="box"
+            size="0.025 0.025 0.34"
+            pos="-0.36 0.28 -0.34"
+            material="table_mat"/>
+      <geom name="transfer_table_leg_rr"
+            type="box"
+            size="0.025 0.025 0.34"
+            pos="-0.36 -0.28 -0.34"
+            material="table_mat"/>
+
+      <!-- zonas objetivo sobre mesa -->
+      <site name="table_transfer_site"
+            pos="0 0 0.055"
+            size="0.035"
+            rgba="1 0.8 0.1 0.7"
+            type="sphere"/>
+
+      <site name="table_left_drop_site"
+            pos="0 0.12 0.055"
+            size="0.025"
+            rgba="1 0.8 0.1 0.5"
+            type="sphere"/>
+
+      <site name="table_right_drop_site"
+            pos="0 -0.12 0.055"
+            size="0.025"
+            rgba="1 0.8 0.1 0.5"
+            type="sphere"/>
+    </body>
+
+    <!-- Estante izquierdo: origen típico para brazo izquierdo -->
+    <body name="left_shelf" pos="0.78 0.62 0.68">
+      <!-- estructura vertical -->
+      <geom name="left_shelf_back"
+            type="box"
+            size="0.06 0.035 0.42"
+            pos="-0.26 0 -0.02"
+            material="shelf_mat"/>
+
+      <!-- repisas -->
+      <geom name="left_shelf_lower"
+            type="box"
+            size="0.28 0.18 0.025"
+            pos="0 0 -0.15"
+            material="shelf_mat"
+            condim="3"
+            friction="0.95 0.03 0.001"/>
+
+      <geom name="left_shelf_middle"
+            type="box"
+            size="0.28 0.18 0.025"
+            pos="0 0 0.05"
+            material="shelf_mat"
+            condim="3"
+            friction="0.95 0.03 0.001"/>
+
+      <geom name="left_shelf_upper"
+            type="box"
+            size="0.28 0.18 0.025"
+            pos="0 0 0.25"
+            material="shelf_mat"
+            condim="3"
+            friction="0.95 0.03 0.001"/>
+
+      <!-- separadores laterales mínimos -->
+      <geom name="left_shelf_side_a"
+            type="box"
+            size="0.28 0.015 0.42"
+            pos="0 0.18 -0.02"
+            material="shelf_mat"/>
+
+      <geom name="left_shelf_side_b"
+            type="box"
+            size="0.28 0.015 0.42"
+            pos="0 -0.18 -0.02"
+            material="shelf_mat"/>
+
+      <!-- sitios de referencia -->
+      <site name="left_shelf_slot_1"
+            pos="0.05 0 0.085"
+            size="0.025"
+            rgba="0.2 1 0.2 0.7"
+            type="sphere"/>
+
+      <site name="left_shelf_slot_2"
+            pos="0.05 0 0.285"
+            size="0.025"
+            rgba="0.2 1 0.2 0.7"
+            type="sphere"/>
+    </body>
+
+    <!-- Estante derecho: destino típico para brazo derecho -->
+    <body name="right_shelf" pos="0.78 -0.62 0.68">
+      <geom name="right_shelf_back"
+            type="box"
+            size="0.06 0.035 0.42"
+            pos="-0.26 0 -0.02"
+            material="shelf_mat"/>
+
+      <geom name="right_shelf_lower"
+            type="box"
+            size="0.28 0.18 0.025"
+            pos="0 0 -0.15"
+            material="shelf_mat"
+            condim="3"
+            friction="0.95 0.03 0.001"/>
+
+      <geom name="right_shelf_middle"
+            type="box"
+            size="0.28 0.18 0.025"
+            pos="0 0 0.05"
+            material="shelf_mat"
+            condim="3"
+            friction="0.95 0.03 0.001"/>
+
+      <geom name="right_shelf_upper"
+            type="box"
+            size="0.28 0.18 0.025"
+            pos="0 0 0.25"
+            material="shelf_mat"
+            condim="3"
+            friction="0.95 0.03 0.001"/>
+
+      <geom name="right_shelf_side_a"
+            type="box"
+            size="0.28 0.015 0.42"
+            pos="0 0.18 -0.02"
+            material="shelf_mat"/>
+
+      <geom name="right_shelf_side_b"
+            type="box"
+            size="0.28 0.015 0.42"
+            pos="0 -0.18 -0.02"
+            material="shelf_mat"/>
+
+      <site name="right_shelf_slot_1"
+            pos="0.05 0 0.085"
+            size="0.025"
+            rgba="0.2 0.4 1 0.7"
+            type="sphere"/>
+
+      <site name="right_shelf_slot_2"
+            pos="0.05 0 0.285"
+            size="0.025"
+            rgba="0.2 0.4 1 0.7"
+            type="sphere"/>
+    </body>
+
+    <!-- ========================================================= -->
+    <!-- Piezas simples para validación -->
+    <!-- Masa objetivo: < 300 g, coherente con restricción de tesis -->
+    <!-- ========================================================= -->
+
+    <!-- Cubo inicial en estante izquierdo, repisa media -->
+    <body name="seq_cube_red" pos="0.83 0.62 0.755">
+      <freejoint name="seq_cube_red_freejoint"/>
+      <geom name="seq_cube_red_geom"
+            type="box"
+            size="0.035 0.035 0.035"
+            mass="0.12"
+            material="cube_red_mat"
+            condim="4"
+            friction="1.0 0.04 0.002"/>
+      <site name="seq_cube_red_site"
+            pos="0 0 0"
+            size="0.012"
+            rgba="1 1 1 0.8"
+            type="sphere"/>
+    </body>
+
+    <!-- Cubo secundario para ensayo de 2 piezas -->
+    <body name="seq_cube_blue" pos="0.83 0.62 0.955">
+      <freejoint name="seq_cube_blue_freejoint"/>
+      <geom name="seq_cube_blue_geom"
+            type="box"
+            size="0.03 0.03 0.03"
+            mass="0.10"
+            material="cube_blue_mat"
+            condim="4"
+            friction="1.0 0.04 0.002"/>
+      <site name="seq_cube_blue_site"
+            pos="0 0 0"
+            size="0.012"
+            rgba="1 1 1 0.8"
+            type="sphere"/>
+    </body>
+
+    <!-- Esfera para validar pieza con orientación no relevante -->
+    <body name="seq_sphere_green" pos="0.83 -0.62 0.755">
+      <freejoint name="seq_sphere_green_freejoint"/>
+      <geom name="seq_sphere_green_geom"
+            type="sphere"
+            size="0.035"
+            mass="0.09"
+            material="sphere_green_mat"
+            condim="4"
+            friction="1.0 0.04 0.002"/>
+      <site name="seq_sphere_green_site"
+            pos="0 0 0"
+            size="0.012"
+            rgba="1 1 1 0.8"
+            type="sphere"/>
+    </body>
+
+    <!-- Cámara virtual frontal para validación visual -->
+    <camera name="front_validation_camera"
+            pos="1.55 0 1.35"
+            xyaxes="0 1 0 -0.45 0 0.90"
+            fovy="55"/>
+
+    <!-- Cámara superior para verificar secuencia y posición final -->
+    <camera name="top_validation_camera"
+            pos="0.75 0 2.35"
+            xyaxes="0 1 0 -1 0 0"
+            fovy="45"/>
+
+  </worldbody>
+
+</mujoco>
