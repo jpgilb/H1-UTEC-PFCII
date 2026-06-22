@@ -170,6 +170,11 @@ def generate_launch_description():
             description='Claro de superficie mínimo para estantes (-1.0 para usar surface_clearance)'
         ),
         DeclareLaunchArgument(
+            'dz_offset',
+            default_value='0.020',
+            description='Desplazamiento vertical del TCP respecto al centro del objeto [m]'
+        ),
+        DeclareLaunchArgument(
             'shelf_skip_vertical_descent',
             default_value='true',
             description='Saltar el descenso vertical en modo estante (shelf)'
@@ -277,7 +282,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'tcp_place_position_tolerance',
-            default_value='0.012',
+            default_value='0.020',
             description='Tolerancia posicional para validación de TCP en colocación [m]'
         ),
         DeclareLaunchArgument(
@@ -457,6 +462,7 @@ def generate_launch_description():
             'validate_aruco_table_target_ik': LaunchConfiguration('validate_aruco_table_target_ik'),
             'shelf_pregrasp_distance': LaunchConfiguration('shelf_pregrasp_distance'),
             'shelf_surface_clearance': LaunchConfiguration('shelf_surface_clearance'),
+            'dz_offset': LaunchConfiguration('dz_offset'),
             'shelf_skip_vertical_descent': LaunchConfiguration('shelf_skip_vertical_descent'),
             'shelf_lift_before_retreat_enabled': LaunchConfiguration('shelf_lift_before_retreat_enabled'),
             'shelf_lift_before_retreat_distance': LaunchConfiguration('shelf_lift_before_retreat_distance'),

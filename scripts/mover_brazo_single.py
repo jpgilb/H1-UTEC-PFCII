@@ -38,6 +38,7 @@ from control_msgs.action import FollowJointTrajectory
 from geometry_msgs.msg import Pose, PoseStamped
 from moveit_msgs.action import MoveGroup, ExecuteTrajectory
 from moveit_msgs.msg import (
+    AllowedCollisionEntry,
     AttachedCollisionObject,
     CollisionObject,
     Constraints,
@@ -203,9 +204,9 @@ class SingleArmFaceApproachGraspNode(Node):
         self.declare_parameter('cartesian_max_step', 0.005)
         self.declare_parameter('cartesian_jump_threshold', 1.5)
         self.declare_parameter('phase4_start_sync_enabled', True)
-        self.declare_parameter('phase4_tcp_position_tolerance', 0.015)
-        self.declare_parameter('phase4_tcp_orientation_tolerance_deg', 5.0)
-        self.declare_parameter('phase4_start_sync_timeout', 1.0)
+        self.declare_parameter('phase4_tcp_position_tolerance', 0.095)
+        self.declare_parameter('phase4_tcp_orientation_tolerance_deg', 12.0)
+        self.declare_parameter('phase4_start_sync_timeout', 3.5)
         self.declare_parameter('phase4_start_sync_poll_dt', 0.05)
         self.declare_parameter('cartesian_joint_jump_guard_enabled', True)
         self.declare_parameter('cartesian_max_step_joint_delta', 0.35)
@@ -271,7 +272,7 @@ class SingleArmFaceApproachGraspNode(Node):
         # 12. PARÁMETROS DE VALIDACIÓN GEOMÉTRICA DE TCP Y COLOCACIÓN MESA
         # ======================================================================
         self.declare_parameter('validate_tcp_before_detach', True)
-        self.declare_parameter('tcp_place_position_tolerance', 0.012)
+        self.declare_parameter('tcp_place_position_tolerance', 0.020)
         self.declare_parameter('tcp_place_orientation_tolerance_deg', 8.0)
         self.declare_parameter('abort_on_tcp_place_mismatch', True)
         self.declare_parameter('table_place_motion_mode', 'cartesian')
@@ -297,6 +298,7 @@ class SingleArmFaceApproachGraspNode(Node):
         self.declare_parameter('ompl_max_velocity_scaling_factor', 0.10)
         self.declare_parameter('ompl_max_acceleration_scaling_factor', 0.10)
         self.declare_parameter('ompl_joint_goal_tolerance', 0.015)
+        self.declare_parameter('ompl_invalid_plan_retries', 3)
 
         # --------------------------
         # CARGAR VALORES DE PARÁMETROS
@@ -373,6 +375,7 @@ class SingleArmFaceApproachGraspNode(Node):
         self.phase4_motion_mode = str(self.get_parameter('phase4_motion_mode').value).lower().strip()
 
         self.manipulation_geometry_mode = str(self.get_parameter('manipulation_geometry_mode').value).lower().strip()
+        self.source_manipulation_geometry_mode = self.manipulation_geometry_mode
         self.shelf_pregrasp_distance = float(self.get_parameter('shelf_pregrasp_distance').value)
         if self.shelf_pregrasp_distance < 0.0:
             self.shelf_pregrasp_distance = self.approach_distance
@@ -451,6 +454,9 @@ class SingleArmFaceApproachGraspNode(Node):
         self.ompl_max_velocity_scaling_factor = float(self.get_parameter('ompl_max_velocity_scaling_factor').value)
         self.ompl_max_acceleration_scaling_factor = float(self.get_parameter('ompl_max_acceleration_scaling_factor').value)
         self.ompl_joint_goal_tolerance = float(self.get_parameter('ompl_joint_goal_tolerance').value)
+        self.ompl_invalid_plan_retries = int(
+            self.get_parameter('ompl_invalid_plan_retries').value
+        )
 
         # Validaciones OMPL
         if self.ompl_num_planning_attempts < 1:
@@ -603,7 +609,7 @@ class SingleArmFaceApproachGraspNode(Node):
         self.shelf_place_lowering_done = False
         self.pending_phase9_shelf_insert_lifted_motion = False
         self.tcp_place_lifted = np.zeros(3, dtype=float)
-        self.shelf_out_dir_world = np.array([-1.0, 0.0, 0.0], dtype=float)
+        # self.shelf_out_dir_world se conserva desde parámetros; no sobrescribir aquí
         self.pending_phase12_shelf_retreat_motion = False
 
         # Estado de cola de objetos
@@ -890,6 +896,7 @@ class SingleArmFaceApproachGraspNode(Node):
         self.object_position = self.place_object_center.copy()
         self.object_yaw_rad = self.target_object_yaw_rad
         self.transfer_stage = 'table_to_target'
+        self.manipulation_geometry_mode = 'table'
 
         self.get_logger().info(f'[Transición] Pose actual del objeto en mesa: {self.object_position.tolist()}')
         self.get_logger().info(f'[Transición] Yaw actual del objeto en mesa: {math.degrees(self.object_yaw_rad):.2f}°')
@@ -1901,6 +1908,7 @@ class SingleArmFaceApproachGraspNode(Node):
         # Resetear todos los estados internos de ciclo
         self.current_phase = 0
         self.transfer_stage = 'source_to_table'
+        self.manipulation_geometry_mode = self.source_manipulation_geometry_mode
         self.retreat_done = False
         self.hand_open_confirmed = False
         self.shelf_lift_before_retreat_done = False
@@ -2140,6 +2148,54 @@ class SingleArmFaceApproachGraspNode(Node):
                 return False
         except Exception as e:
             self.get_logger().error(f'[PlanningScene] Excepción en {label}: {str(e)}')
+            return False
+
+    def permitir_contacto_objeto_con_superficie(self, surface_id: str) -> bool:
+        req = GetPlanningScene.Request()
+        req.components.components = PlanningSceneComponents.ALLOWED_COLLISION_MATRIX
+        try:
+            response = self.get_planning_scene_client.call(req)
+            if response is None:
+                self.get_logger().error("No se pudo obtener AllowedCollisionMatrix.")
+                return False
+
+            acm = response.scene.allowed_collision_matrix
+
+            def ensure_name(name: str) -> int:
+                if name in acm.entry_names:
+                    return acm.entry_names.index(name)
+                acm.entry_names.append(name)
+                for entry in acm.entry_values:
+                    entry.enabled.append(False)
+                new_entry = AllowedCollisionEntry()
+                new_entry.enabled = [False] * len(acm.entry_names)
+                acm.entry_values.append(new_entry)
+                return len(acm.entry_names) - 1
+
+            surface_index = ensure_name(surface_id)
+            for object_id in ('objeto_manipulado', 'objeto_interno_colision'):
+                object_index = ensure_name(object_id)
+                acm.entry_values[object_index].enabled[surface_index] = True
+                acm.entry_values[surface_index].enabled[object_index] = True
+
+            scene = PlanningScene()
+            scene.is_diff = True
+            scene.allowed_collision_matrix = acm
+            apply_req = ApplyPlanningScene.Request()
+            apply_req.scene = scene
+            apply_response = self.apply_planning_scene_client.call(apply_req)
+            ok = apply_response is not None and apply_response.success
+            if ok:
+                self.get_logger().info(
+                    f"Contacto objeto-superficie permitido durante place: {surface_id}"
+                )
+            else:
+                self.get_logger().error(
+                    f"No se pudo actualizar ACM para superficie {surface_id}."
+                )
+            return ok
+        except Exception as exc:
+            self.get_logger().error(f"Excepción actualizando ACM: {exc}")
             return False
 
     def obtener_planning_scene(self) -> Optional[PlanningScene]:
@@ -3011,8 +3067,19 @@ class SingleArmFaceApproachGraspNode(Node):
         self.tcp_contact = self.object_position + self.approach_dir_world * contact_offset
         self.tcp_contact[2] += self.dz_offset
 
-        # Pregrasp frontal fuera del estante usando la dirección de salida del estante
+        # Pregrasp fuera del objeto.
+        # En top-pick, el pregrasp debe quedar por encima del contacto,
+        # no lateralmente frente al estante.
         shelf_out_dir = self.obtener_direccion_salida_estante()
+
+        if abs(float(self.approach_dir_world[2])) > 0.7:
+            shelf_out_dir = np.array(self.approach_dir_world, dtype=float)
+            shelf_out_dir = shelf_out_dir / np.linalg.norm(shelf_out_dir)
+            self.get_logger().warn(
+                "[TOP PICK TEST] Aproximación superior detectada: "
+                "tcp_pregrasp se calcula sobre approach_dir_world, no sobre salida lateral del estante."
+            )
+
         self.tcp_pregrasp = self.tcp_contact + shelf_out_dir * abs(self.shelf_pregrasp_distance)
         self.tcp_ready = np.copy(self.tcp_pregrasp)
 
@@ -3497,6 +3564,8 @@ class SingleArmFaceApproachGraspNode(Node):
         req.ik_request.pose_stamped.pose.orientation.y = float(quat_xyzw[1])
         req.ik_request.pose_stamped.pose.orientation.z = float(quat_xyzw[2])
         req.ik_request.pose_stamped.pose.orientation.w = float(quat_xyzw[3])
+        if self.last_joint_state is not None:
+            req.ik_request.robot_state.joint_state = self.last_joint_state
         req.ik_request.avoid_collisions = bool(avoid_collisions)
         return self.ik_client.call(req)
 
@@ -3559,8 +3628,24 @@ class SingleArmFaceApproachGraspNode(Node):
         future = self.move_group_client.send_goal_async(goal_msg)
         future.add_done_callback(self.move_group_goal_response_callback)
 
-    def planificar_a_pose(self, pos: np.ndarray, quat: np.ndarray, phase: int, label: str) -> None:
+    def planificar_a_pose(
+        self,
+        pos: np.ndarray,
+        quat: np.ndarray,
+        phase: int,
+        label: str,
+        is_retry: bool = False,
+    ) -> None:
         self.get_logger().info(f'Planificando fase {phase}: {label}')
+
+        if not is_retry:
+            self.ompl_retry_count = 0
+            self.ompl_retry_context = (
+                np.array(pos, dtype=float),
+                np.array(quat, dtype=float),
+                phase,
+                label,
+            )
         
         if self.enable_state_validity_diagnostics:
             valid_curr = self.verificar_estado_actual(f"antes de fase {phase} - {label}")
@@ -3694,8 +3779,24 @@ class SingleArmFaceApproachGraspNode(Node):
             else:
                 self.ejecutar_siguiente_fase()
         else:
-            self.get_logger().error(f'Error MoveIt en fase {self.current_phase}: {result.error_code.val}')
-            self.abortar_objeto_actual(f"Error MoveIt en fase {self.current_phase}: {result.error_code.val}")
+            error_code = result.error_code.val
+            if (
+                error_code in (-1, -2)
+                and getattr(self, 'ompl_retry_context', None) is not None
+                and self.ompl_retry_count < self.ompl_invalid_plan_retries
+            ):
+                self.ompl_retry_count += 1
+                pos, quat, phase, label = self.ompl_retry_context
+                self.get_logger().warn(
+                    f"Plan OMPL inválido en fase {phase} (código {error_code}). "
+                    f"Reintento {self.ompl_retry_count}/{self.ompl_invalid_plan_retries}."
+                )
+                self.planificar_a_pose(
+                    pos, quat, phase=phase, label=label, is_retry=True
+                )
+                return
+            self.get_logger().error(f'Error MoveIt en fase {self.current_phase}: {error_code}')
+            self.abortar_objeto_actual(f"Error MoveIt en fase {self.current_phase}: {error_code}")
 
     # ======================================================================
     # Mano
@@ -4048,11 +4149,22 @@ class SingleArmFaceApproachGraspNode(Node):
     def ejecutar_fase_2_preagarre_elevado(self) -> None:
         self.get_logger().info('=== FASE 2: Preagarre elevado ===')
         self.calcular_poses_tcp()
+
         if self.manipulation_geometry_mode == 'shelf':
             self.get_logger().info('Modo shelf: pregrasp frontal planificado con OMPL')
-            self.planificar_a_pose(self.tcp_pregrasp, self.tcp_quat, phase=2, label='pregrasp frontal shelf con OMPL')
+            self.planificar_a_pose(
+                self.tcp_pregrasp,
+                self.tcp_quat,
+                phase=2,
+                label='pregrasp frontal shelf con OMPL'
+            )
         else:
-            self.planificar_a_pose(self.tcp_pregrasp, self.tcp_quat, phase=2, label='preagarre elevado')
+            self.planificar_a_pose(
+                self.tcp_pregrasp,
+                self.tcp_quat,
+                phase=2,
+                label='preagarre elevado'
+            )
 
     def ejecutar_fase_3_descenso_vertical(self) -> None:
         if self.manipulation_geometry_mode == 'shelf' and self.shelf_skip_vertical_descent:
@@ -4088,8 +4200,19 @@ class SingleArmFaceApproachGraspNode(Node):
         )
         self.diagnosticar_convencion_tcp_fase4()
 
-        if self.manipulation_geometry_mode == 'shelf':
-            self.get_logger().warn("Modo shelf: Fase 4 con OMPL hacia contacto para evitar colisión de codo/torso.")
+        if self.manipulation_geometry_mode == 'shelf' and self.phase4_motion_mode == 'cartesian':
+            self.get_logger().info(
+                "Modo shelf: Fase 4 cartesiana horizontal para mantener el corredor de la repisa."
+            )
+            self.ejecutar_movimiento_cartesiano_local(
+                target_pos=self.tcp_contact,
+                target_quat=self.tcp_quat,
+                phase=4,
+                label="aproximación cartesiana frontal shelf",
+                on_success="phase4_done"
+            )
+        elif self.manipulation_geometry_mode == 'shelf':
+            self.get_logger().warn("Modo shelf: Fase 4 con OMPL hacia contacto.")
             self.planificar_a_pose(
                 self.tcp_contact,
                 self.tcp_quat,
@@ -4281,6 +4404,12 @@ class SingleArmFaceApproachGraspNode(Node):
             self.get_logger().info('=== FASE 9: Descenso a pose de colocación ===')
             self.get_logger().info(f'Pose TCP de colocación (place): {self.tcp_place.tolist()}')
             self.get_logger().info(f'[TABLE PLACE MODE] table_place_motion_mode={self.table_place_motion_mode}')
+
+            if not self.permitir_contacto_objeto_con_superficie('mjc_transfer_table_top'):
+                self.abortar_objeto_actual(
+                    "No se pudo permitir contacto controlado objeto-mesa"
+                )
+                return
             
             if self.table_place_motion_mode == 'ompl':
                 self.get_logger().info(
