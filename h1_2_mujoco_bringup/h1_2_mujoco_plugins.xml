@@ -1,0 +1,9 @@
+<library path="h1_2_mujoco_plugins">
+  <class name="h1_2_mujoco_plugins/ObjectSyncPlugin"
+         type="h1_2_mujoco_plugins::ObjectSyncPlugin"
+         base_class_type="mujoco_ros2_control_plugins::MuJoCoROS2ControlPluginBase">
+    <description>
+      A plugin to synchronize MuJoCo visual and physical objects with MoveIt manipulation states.
+    </description>
+  </class>
+</library>

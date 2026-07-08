@@ -1,0 +1,86 @@
+from launch import LaunchDescription
+from launch.actions import ExecuteProcess
+from launch_ros.actions import Node
+import os
+
+
+def generate_launch_description():
+    vision_dir = os.path.expanduser('~/ros2_ws/src/H1-UTEC-PFCII/h1_vision/h1_vision')
+
+    aruco_script = os.path.join(vision_dir, 'aruco_tracker.py')
+    cube_script = os.path.join(vision_dir, 'object_tracker_mujoco.py')
+
+    # TF estático coherente con la cámara MuJoCo orientada con respecto al frame base pelvis:
+    # xyaxes="0 -1 0 0.835 0 0.550"
+    camera_static_tf = Node(
+        package='tf2_ros',
+        executable='static_transform_publisher',
+        name='camera_frame_static_tf',
+        output='screen',
+        arguments=[
+            '--x', '0.11109',
+            '--y', '0.01750',
+            '--z', '0.68789',
+            '--qx', '0.67733205',
+            '--qy', '-0.67733205',
+            '--qz', '0.20303027',
+            '--qw', '-0.20303027',
+            '--frame-id', 'pelvis',
+            '--child-frame-id', 'camera_frame',
+        ],
+    )
+
+    aruco_tracker = ExecuteProcess(
+        cmd=[
+            'python3', aruco_script,
+            '--ros-args',
+            '-p', 'color_topic:=/camera/color',
+            '-p', 'camera_info_topic:=/camera/camera_info',
+            '-p', 'camera_frame:=camera_frame',
+            '-p', 'marker_frame:=aruco_mesa',
+            '-p', 'marker_id:=0',
+            # Tamaño efectivo del patrón ArUco detectado por OpenCV.
+            # El plano visual mide 0.093 m, pero el patrón interno detectado es ~0.070 m.
+            '-p', 'marker_size_m:=0.070',
+            '-p', 'aruco_dictionary:=DICT_4X4_50',
+            '-p', 'publish_tf:=true',
+            '-p', 'publish_pose:=true',
+            '-p', 'pose_topic:=/vision/aruco_mesa/pose',
+            '-p', 'debug_visual:=true',
+            '-p', 'show_axes:=true',
+        ],
+        output='screen',
+        emulate_tty=True,
+    )
+
+    cube_tracker = ExecuteProcess(
+        cmd=[
+            'python3', cube_script,
+            '--ros-args',
+            '-p', 'camera_frame:=camera_frame',
+            '-p', 'object_frame:=objeto_cubo_vision',
+            '-p', 'object_dimension:=0.080',
+            '-p', 'color_topic:=/camera/color',
+            '-p', 'depth_topic:=/camera/depth',
+            '-p', 'camera_info_topic:=/camera/camera_info',
+            '-p', 'pose_topic:=/vision/objeto_cubo_vision/pose',
+            '-p', 'object_yaw_correction_deg:=90.0',
+            '-p', 'publish_tf:=true',
+            '-p', 'publish_pose:=true',
+            '-p', 'debug_visual:=true',
+            '-p', 'h_min:=45',
+            '-p', 's_min:=80',
+            '-p', 'v_min:=80',
+            '-p', 'h_max:=90',
+            '-p', 's_max:=255',
+            '-p', 'v_max:=255',
+        ],
+        output='screen',
+        emulate_tty=True,
+    )
+
+    return LaunchDescription([
+        camera_static_tf,
+        aruco_tracker,
+        cube_tracker,
+    ])

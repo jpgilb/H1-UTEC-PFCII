@@ -1,0 +1,78 @@
+<mujoco model="h1_2_mujoco_test">
+  <compiler angle="radian" autolimits="true"/>
+  <option timestep="0.002" gravity="0 0 -9.81"/>
+
+  <worldbody>
+    <light name="main_light" pos="0 0 2"/>
+
+    <geom name="floor"
+          type="plane"
+          size="3 3 0.05"
+          friction="1.0 0.01 0.001"
+          rgba="0.8 0.8 0.8 1"/>
+
+    <!-- For now this is only a physical reference object.
+         The real H1-2 robot model will be added after confirming package/launch structure. -->
+    <body name="cube" pos="0.435 0.5 0.08">
+      <freejoint name="cube_freejoint"/>
+      <geom name="cube_geom"
+            type="box"
+            size="0.0125 0.0125 0.0125"
+            mass="0.05"
+            friction="1.2 0.02 0.001"
+            rgba="0 1 0 1"/>
+    </body>
+
+    <body name="aruco_mesa" pos="0.50 0.00 0.042">
+      <geom name="aruco_marker_visual"
+            type="box"
+            size="0.0465 0.0465 0.001"
+            rgba="0 0 1 1"
+            contype="0"
+            conaffinity="0"/>
+    </body>
+
+    <!-- Environment Table -->
+    <body name="mesa_trabajo" pos="0.50 0.0 0.0174">
+      <geom name="mesa_trabajo_geom"
+            type="box"
+            size="0.20 0.175 0.025"
+            rgba="0.4 0.4 0.4 1"
+            contype="0"
+            conaffinity="0"
+            friction="1.0 0.01 0.001"/>
+    </body>
+
+    <!-- Left Shelf -->
+    <body name="env_left_shelf" pos="0.50 0.58 0.21">
+      <!-- Left side wall -->
+      <geom name="env_left_shelf_side_left_geom" type="box" size="0.09 0.0075 0.21" pos="0.0 0.1425 0.0" rgba="0.6 0.6 0.6 1" contype="0" conaffinity="0"/>
+      <!-- Right side wall -->
+      <geom name="env_left_shelf_side_right_geom" type="box" size="0.09 0.0075 0.21" pos="0.0 -0.1425 0.0" rgba="0.6 0.6 0.6 1" contype="0" conaffinity="0"/>
+      <!-- Top panel -->
+      <geom name="env_left_shelf_top_geom" type="box" size="0.09 0.135 0.0075" pos="0.0 0.0 0.2025" rgba="0.6 0.6 0.6 1" contype="0" conaffinity="0"/>
+      <!-- Bottom panel -->
+      <geom name="env_left_shelf_bottom_geom" type="box" size="0.09 0.135 0.0075" pos="0.0 0.0 -0.2025" rgba="0.6 0.6 0.6 1" contype="0" conaffinity="0"/>
+      <!-- Back panel (facing robot, so back is at +X) -->
+      <geom name="env_left_shelf_back_geom" type="box" size="0.0075 0.135 0.195" pos="0.0825 0.0 0.0" rgba="0.6 0.6 0.6 1" contype="0" conaffinity="0"/>
+      <!-- Dividers (levels) -->
+      <geom name="env_left_shelf_level_1_geom" type="box" size="0.09 0.135 0.0075" pos="0.0 0.0 0.0" rgba="0.6 0.6 0.6 1" contype="0" conaffinity="0"/>
+    </body>
+
+    <!-- Right Shelf -->
+    <body name="env_right_shelf" pos="0.50 -0.58 0.21">
+      <!-- Left side wall -->
+      <geom name="env_right_shelf_side_left_geom" type="box" size="0.09 0.0075 0.21" pos="0.0 0.1425 0.0" rgba="0.6 0.6 0.6 1" contype="0" conaffinity="0"/>
+      <!-- Right side wall -->
+      <geom name="env_right_shelf_side_right_geom" type="box" size="0.09 0.0075 0.21" pos="0.0 -0.1425 0.0" rgba="0.6 0.6 0.6 1" contype="0" conaffinity="0"/>
+      <!-- Top panel -->
+      <geom name="env_right_shelf_top_geom" type="box" size="0.09 0.135 0.0075" pos="0.0 0.0 0.2025" rgba="0.6 0.6 0.6 1" contype="0" conaffinity="0"/>
+      <!-- Bottom panel -->
+      <geom name="env_right_shelf_bottom_geom" type="box" size="0.09 0.135 0.0075" pos="0.0 0.0 -0.2025" rgba="0.6 0.6 0.6 1" contype="0" conaffinity="0"/>
+      <!-- Back panel (facing robot, so back is at +X) -->
+      <geom name="env_right_shelf_back_geom" type="box" size="0.0075 0.135 0.195" pos="0.0825 0.0 0.0" rgba="0.6 0.6 0.6 1" contype="0" conaffinity="0"/>
+      <!-- Dividers (levels) -->
+      <geom name="env_right_shelf_level_1_geom" type="box" size="0.09 0.135 0.0075" pos="0.0 0.0 0.0" rgba="0.6 0.6 0.6 1" contype="0" conaffinity="0"/>
+    </body>
+  </worldbody>
+</mujoco>

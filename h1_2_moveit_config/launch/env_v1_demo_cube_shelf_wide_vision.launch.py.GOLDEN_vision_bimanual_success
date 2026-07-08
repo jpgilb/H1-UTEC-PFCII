@@ -1,0 +1,515 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+import os
+from launch import LaunchDescription
+from launch.actions import DeclareLaunchArgument
+from launch.substitutions import LaunchConfiguration
+from launch_ros.actions import Node
+
+def generate_launch_description():
+    # El nodo ejecutable 'mover_brazo_single.py' está instalado por el paquete 'h1_2_moveit_config'.
+    package_name = 'h1_2_moveit_config'
+
+    # WARNING: This demo uses a deterministic static objeto_cubo TF. 
+    # Do not run object_tracker simultaneously, because publishing the same objeto_cubo frame from two sources may create TF conflicts.
+
+    declared_arguments = [
+        # General parameters
+        DeclareLaunchArgument(
+            'arm_side',
+            default_value='left',
+            description='Lado del brazo a usar (left o right)'
+        ),
+        DeclareLaunchArgument(
+            'base_frame',
+            default_value='pelvis',
+            description='Frame base de referencia del robot'
+        ),
+        DeclareLaunchArgument(
+            'object_frame',
+            default_value='objeto_cubo',
+            description='Frame TF2 del objeto a manipular'
+        ),
+        DeclareLaunchArgument(
+            'object_type',
+            default_value='cube',
+            description='Tipo de objeto (cube o sphere)'
+        ),
+        DeclareLaunchArgument(
+            'object_dimension',
+            default_value='0.08',
+            description='Lado del cubo o diámetro de la esfera [m]'
+        ),
+        DeclareLaunchArgument(
+            'enable_object_queue',
+            default_value='false',
+            description='Habilitar cola de objetos'
+        ),
+
+        # Task parameters
+        DeclareLaunchArgument(
+            'task_mode',
+            default_value='bimanual_transfer',
+            description='Modo de la tarea a ejecutar (e.g. bimanual_transfer)'
+        ),
+        DeclareLaunchArgument(
+            'manipulation_geometry_mode',
+            default_value='shelf',
+            description='Geometría del pick (table o shelf)'
+        ),
+        DeclareLaunchArgument(
+            'place_geometry_mode',
+            default_value='table',
+            description='Geometría del place (table o shelf)'
+        ),
+        DeclareLaunchArgument(
+            'table_transfer_y',
+            default_value='0.0',
+            description='Coordenada Y para la transferencia intermedia en mesa'
+        ),
+
+        DeclareLaunchArgument(
+            'yaw_offset_left_deg',
+            default_value='90.0',
+            description='Offset de yaw del TCP para el brazo izquierdo en grados'
+        ),
+
+        DeclareLaunchArgument(
+            'yaw_offset_right_deg',
+            default_value='90.0',
+            description='Offset de yaw del TCP para el brazo derecho en grados'
+        ),
+
+        DeclareLaunchArgument(
+            'pitch_offset_left_deg',
+            default_value='0.0',
+            description='Offset de pitch del TCP para el brazo izquierdo en grados'
+        ),
+
+        DeclareLaunchArgument(
+            'pitch_offset_right_deg',
+            default_value='-179.9',
+            description='Offset de pitch del TCP para el brazo derecho en grados'
+        ),
+
+        DeclareLaunchArgument(
+            'dz_offset',
+            default_value='0.040',
+            description='Offset vertical del TCP para shelf pick'
+        ),        
+
+        DeclareLaunchArgument(
+            'shelf_access_direction_mode',
+            default_value='base_axis',
+            description='Modo de dirección de acceso al estante'
+        ),
+
+        DeclareLaunchArgument(
+            'shelf_out_dir_x',
+            default_value='-1.0',
+            description='Componente X de la dirección de salida/acceso del estante en el frame base'
+        ),
+
+        DeclareLaunchArgument(
+            'shelf_out_dir_y',
+            default_value='0.0',
+            description='Componente Y de la dirección de salida/acceso del estante en el frame base'
+        ),
+
+        DeclareLaunchArgument(
+            'shelf_out_dir_z',
+            default_value='0.0',
+            description='Componente Z de la dirección de salida/acceso del estante en el frame base'
+        ),
+
+        DeclareLaunchArgument(
+            'debug_stop_after_phase',
+            default_value='0',
+            description='Fase después de la cual se detiene la ejecución para depuración'
+        ),        
+        DeclareLaunchArgument(
+            'shelf_virtual_grasp_enabled',
+            default_value='true',
+            description='Habilitar agarre virtual (sin contacto físico)'
+        ),
+        DeclareLaunchArgument(
+            'shelf_virtual_grasp_gap',
+            default_value='0.035',
+            description='Gap/distancia de seguridad entre el cubo y la mano'
+        ),
+        DeclareLaunchArgument(
+            'shelf_phase2_staged_enabled',
+            default_value='false',
+            description='Habilitar aproximación en dos etapas en Fase 2'
+        ),
+        DeclareLaunchArgument(
+            'shelf_stage_distance_from_attach',
+            default_value='0.220',
+            description='Distancia exterior del pre-alineamiento en Fase 2'
+        ),
+        DeclareLaunchArgument(
+            'diagnostic_contacts_on_ik_failure',
+            default_value='true',
+            description='Habilitar diagnóstico de colisiones mediante check_state_validity'
+        ),
+        DeclareLaunchArgument(
+            'diagnostic_shelf_ik_grid_enabled',
+            default_value='false',
+            description='Habilitar barrido de diagnóstico de IK para poses de estante'
+        ),
+        DeclareLaunchArgument(
+            'diagnostic_shelf_ik_grid_abort_after',
+            default_value='true',
+            description='Abortar ejecución del nodo tras completar el barrido de diagnóstico'
+        ),
+        DeclareLaunchArgument(
+            'diagnostic_shelf_ik_grid_use_collisions',
+            default_value='true',
+            description='Evaluar también IK con colisiones durante el barrido'
+        ),
+        DeclareLaunchArgument(
+            'diagnostic_shelf_ik_grid_pitch_offsets_deg',
+            default_value='-30,-15,0,15,30',
+            description='Offsets de pitch para probar (deltas sobre el pitch nominal) separados por comas'
+        ),
+        DeclareLaunchArgument(
+            'diagnostic_shelf_ik_grid_z_offsets',
+            default_value='0.00,0.05,0.10,0.14',
+            description='Offsets de Z sobre la pose de stage exterior separados por comas'
+        ),
+        DeclareLaunchArgument(
+            'diagnostic_shelf_ik_grid_x_values',
+            default_value='0.3205,0.3605,0.4005,0.4405,0.4755,0.5000',
+            description='Valores absolutos de X para evaluar separados por comas'
+        ),
+        DeclareLaunchArgument(
+            'diagnostic_shelf_ik_grid_yaw_values_deg',
+            default_value='90,120,150,180',
+            description='Valores de yaw en grados para evaluar separados por comas'
+        ),
+
+        # Table & ArUco parameters
+        DeclareLaunchArgument(
+            'table_collision',
+            default_value='true',
+            description='Activar colisión con la mesa de trabajo'
+        ),
+        DeclareLaunchArgument(
+            'use_aruco_table_target',
+            default_value='false',
+            description='Usar ArUco como destino de colocación intermedia en mesa'
+        ),
+        DeclareLaunchArgument(
+            'use_aruco_table_height',
+            default_value='false',
+            description='Usar ArUco para ajustar dinámicamente la altura de colisión de la mesa'
+        ),
+        DeclareLaunchArgument(
+            'object_pose_reference',
+            default_value='center',
+            description='Referencia de la pose del objeto (center o top_face_center)'
+        ),
+
+        # Motion & Cartesian parameters
+        DeclareLaunchArgument(
+            'use_cartesian_local_motions',
+            default_value='false',
+            description='Usar movimientos cartesianos locales para aproximación y retiro'
+        ),
+        DeclareLaunchArgument(
+            'use_split_place_retreat',
+            default_value='false',
+            description='Usar retiro segmentado en fase de place'
+        ),
+        DeclareLaunchArgument(
+            'phase4_motion_mode',
+            default_value='auto',
+            description='Modo de movimiento para la aproximación (cartesian, ompl o auto)'
+        ),
+        DeclareLaunchArgument(
+            'min_cartesian_fraction',
+            default_value='0.95',
+            description='Fracción mínima para dar por válido un path cartesiano'
+        ),
+
+        # Debug & Settle parameters
+        DeclareLaunchArgument(
+            'debug_disable_object_collision',
+            default_value='false',
+            description='Desactivar colisiones del objeto con el mundo'
+        ),
+        DeclareLaunchArgument(
+            'collision_test_assertions_enabled',
+            default_value='false',
+            description='Activar aserciones y detener ejecución en fallos de colisión'
+        ),
+        DeclareLaunchArgument(
+            'post_motion_settle_time',
+            default_value='2.0',
+            description='Tiempo de espera tras movimiento para estabilización de física [s]'
+        ),
+        DeclareLaunchArgument(
+            'abort_on_invalid_state_before_motion',
+            default_value='false',
+            description='Abortar ejecución si el estado del robot es inválido antes de mover'
+        ),
+        DeclareLaunchArgument(
+            'validate_tcp_before_detach',
+            default_value='false',
+            description='Validar alineación de TCP antes de soltar el objeto'
+        ),
+        DeclareLaunchArgument(
+            'confirm_hand_open_before_detach',
+            default_value='false',
+            description='Confirmar apertura física de la mano antes de desasociar en MoveIt'
+        ),
+
+        # Phase 8 parameters
+        DeclareLaunchArgument(
+            'phase8_motion_mode',
+            default_value='auto',
+            description='Modo de movimiento para Phase 8 (cartesian, ompl o auto)'
+        ),
+        DeclareLaunchArgument(
+            'phase8_transit_z',
+            default_value='0.220',
+            description='Altura Z de tránsito libre durante Phase 8 [m]'
+        ),
+        DeclareLaunchArgument(
+            'phase8_min_cartesian_fraction',
+            default_value='0.95',
+            description='Fracción cartesiana mínima requerida en Phase 8'
+        ),
+        DeclareLaunchArgument(
+            'phase8_staged_max_segment_distance',
+            default_value='0.08',
+            description='Distancia máxima de segmento para planificador OMPL segmentado en Phase 8 [m]'
+        ),
+        DeclareLaunchArgument(
+            'debug_start_table_to_target',
+            default_value='false',
+            description='Iniciar directamente en la etapa table_to_target'
+        ),
+        DeclareLaunchArgument(
+            'phase8_shelf_transit_z_override',
+            default_value='0.252',
+            description='Altura Z de tránsito sobre mesa en Fase 8 estante'
+        ),
+
+        # Environment Scene parameters
+        DeclareLaunchArgument(
+            'environment_scene_enabled',
+            default_value='true',
+            description='Habilitar modelado de obstáculos en PlanningScene'
+        ),
+        DeclareLaunchArgument(
+            'environment_profile',
+            default_value='env_v1',
+            description='Perfil del entorno a cargar (table_only o env_v1)'
+        ),
+        DeclareLaunchArgument(
+            'environment_add_table_to_planning_scene',
+            default_value='true',
+            description='Agregar mesa de trabajo a la PlanningScene'
+        ),
+        DeclareLaunchArgument(
+            'environment_add_shelves_to_planning_scene',
+            default_value='true',
+            description='Agregar estanterías a la PlanningScene'
+        ),
+        DeclareLaunchArgument(
+            'shelf_pregrasp_distance',
+            default_value='0.250',
+            description='Distancia de pregrasp shelf en la dirección de salida del estante'
+        ),
+
+        # Wide Shelves Environment Geometry (SYNCHRONIZED WITH MUJOCO XML)
+        DeclareLaunchArgument(
+            'env_shelf_center_x',
+            default_value='0.630',
+            description='Coordenada X del centro de los estantes en el frame base'
+        ),
+        DeclareLaunchArgument(
+            'env_left_shelf_center_y',
+            default_value='0.430',
+            description='Coordenada Y del centro del estante izquierdo'
+        ),
+        DeclareLaunchArgument(
+            'env_right_shelf_center_y',
+            default_value='-0.430',
+            description='Coordenada Y del centro del estante derecho'
+        ),
+        DeclareLaunchArgument(
+            'env_shelf_center_z',
+            default_value='0.045',
+            description='Coordenada Z del centro de los estantes (da un piso en Z=0.0525)'
+        ),
+        DeclareLaunchArgument(
+            'env_shelf_size_x',
+            default_value='0.24',
+            description='Profundidad (X) de los estantes [m]'
+        ),
+        DeclareLaunchArgument(
+            'env_shelf_size_y',
+            default_value='0.40',
+            description='Ancho (Y) de los estantes [m]'
+        ),
+        DeclareLaunchArgument(
+            'env_shelf_size_z',
+            default_value='0.72',
+            description='Altura (Z) de los estantes [m]'
+        ),
+        DeclareLaunchArgument(
+            'env_shelf_wall_thickness',
+            default_value='0.015',
+            description='Espesor de pared de los estantes [m]'
+        ),
+        DeclareLaunchArgument(
+            'env_shelf_num_levels',
+            default_value='2',
+            description='Número de niveles/compartimentos de los estantes'
+        ),
+        DeclareLaunchArgument(
+            'env_shelf_active_level_index',
+            default_value='1',
+            description='Índice del nivel activo donde se coloca el objeto (0-indexed)'
+        ),
+
+        # Environment Table Geometry (SYNCHRONIZED WITH MUJOCO XML)
+        DeclareLaunchArgument(
+            'env_table_center_x',
+            default_value='0.50',
+            description='Coordenada X del centro de la mesa de trabajo'
+        ),
+        DeclareLaunchArgument(
+            'env_table_center_y',
+            default_value='0.0',
+            description='Coordenada Y del centro de la mesa de trabajo'
+        ),
+        DeclareLaunchArgument(
+            'env_table_center_z',
+            default_value='0.0174',
+            description='Coordenada Z del centro de la mesa de trabajo'
+        ),
+        DeclareLaunchArgument(
+            'env_table_size_x',
+            default_value='0.40',
+            description='Profundidad (X) de la mesa [m]'
+        ),
+        DeclareLaunchArgument(
+            'env_table_size_y',
+            default_value='0.35',
+            description='Ancho (Y) de la mesa [m]'
+        ),
+        DeclareLaunchArgument(
+            'env_table_size_z',
+            default_value='0.05',
+            description='Espesor (Z) de la mesa [m]'
+        ),
+    ]
+
+    mover_brazo_single_node = Node(
+        package=package_name,
+        executable='mover_brazo_single.py',
+        name='single_arm_face_approach_grasp_node',
+        output='screen',
+        parameters=[{
+            'arm_side': LaunchConfiguration('arm_side'),
+            'base_frame': LaunchConfiguration('base_frame'),
+            'object_frame': LaunchConfiguration('object_frame'),
+            'object_type': LaunchConfiguration('object_type'),
+            'object_dimension': LaunchConfiguration('object_dimension'),
+            'enable_object_queue': LaunchConfiguration('enable_object_queue'),
+            'task_mode': LaunchConfiguration('task_mode'),
+            'manipulation_geometry_mode': LaunchConfiguration('manipulation_geometry_mode'),
+            'place_geometry_mode': LaunchConfiguration('place_geometry_mode'),
+            'table_transfer_y': LaunchConfiguration('table_transfer_y'),
+            'table_collision': LaunchConfiguration('table_collision'),
+            'use_aruco_table_target': LaunchConfiguration('use_aruco_table_target'),
+            'freeze_aruco_table_target': True,
+            'table_target_frame': LaunchConfiguration('table_target_frame'),
+            'table_target_offset_x': LaunchConfiguration('table_target_offset_x'),
+            'table_target_offset_y': LaunchConfiguration('table_target_offset_y'),
+            'table_target_offset_z': LaunchConfiguration('table_target_offset_z'),
+            'table_target_offset_mode': LaunchConfiguration('table_target_offset_mode'),
+            'aruco_z_is_table_surface': LaunchConfiguration('aruco_z_is_table_surface'),
+            'validate_aruco_table_target_ik': LaunchConfiguration('validate_aruco_table_target_ik'),
+            'use_aruco_table_height': LaunchConfiguration('use_aruco_table_height'),
+            'object_pose_reference': LaunchConfiguration('object_pose_reference'),
+            'use_cartesian_local_motions': LaunchConfiguration('use_cartesian_local_motions'),
+            'use_split_place_retreat': LaunchConfiguration('use_split_place_retreat'),
+            'phase4_motion_mode': LaunchConfiguration('phase4_motion_mode'),
+            'min_cartesian_fraction': LaunchConfiguration('min_cartesian_fraction'),
+            'debug_disable_object_collision': LaunchConfiguration('debug_disable_object_collision'),
+            'collision_test_assertions_enabled': LaunchConfiguration('collision_test_assertions_enabled'),
+            'post_motion_settle_time': LaunchConfiguration('post_motion_settle_time'),
+            'debug_stop_after_phase': LaunchConfiguration('debug_stop_after_phase'),
+            'abort_on_invalid_state_before_motion': LaunchConfiguration('abort_on_invalid_state_before_motion'),
+            'validate_tcp_before_detach': LaunchConfiguration('validate_tcp_before_detach'),
+            'confirm_hand_open_before_detach': LaunchConfiguration('confirm_hand_open_before_detach'),
+            'phase8_motion_mode': LaunchConfiguration('phase8_motion_mode'),
+            'phase8_transit_z': LaunchConfiguration('phase8_transit_z'),
+            'phase8_min_cartesian_fraction': LaunchConfiguration('phase8_min_cartesian_fraction'),
+            'phase8_staged_max_segment_distance': LaunchConfiguration('phase8_staged_max_segment_distance'),
+            'debug_start_table_to_target': LaunchConfiguration('debug_start_table_to_target'),
+            'phase8_shelf_transit_z_override': LaunchConfiguration('phase8_shelf_transit_z_override'),
+            'environment_scene_enabled': LaunchConfiguration('environment_scene_enabled'),
+            'environment_profile': LaunchConfiguration('environment_profile'),
+            'environment_add_table_to_planning_scene': LaunchConfiguration('environment_add_table_to_planning_scene'),
+            'environment_add_shelves_to_planning_scene': LaunchConfiguration('environment_add_shelves_to_planning_scene'),
+            'yaw_offset_left_deg': LaunchConfiguration('yaw_offset_left_deg'),
+            'yaw_offset_right_deg': LaunchConfiguration('yaw_offset_right_deg'),
+            'shelf_access_direction_mode': LaunchConfiguration('shelf_access_direction_mode'),
+            'shelf_out_dir_x': LaunchConfiguration('shelf_out_dir_x'),
+            'shelf_out_dir_y': LaunchConfiguration('shelf_out_dir_y'),
+            'shelf_out_dir_z': LaunchConfiguration('shelf_out_dir_z'),
+            'shelf_virtual_grasp_enabled': LaunchConfiguration('shelf_virtual_grasp_enabled'),
+            'shelf_virtual_grasp_gap': LaunchConfiguration('shelf_virtual_grasp_gap'),
+            'shelf_phase2_staged_enabled': LaunchConfiguration('shelf_phase2_staged_enabled'),
+            'shelf_stage_distance_from_attach': LaunchConfiguration('shelf_stage_distance_from_attach'),
+            'diagnostic_contacts_on_ik_failure': LaunchConfiguration('diagnostic_contacts_on_ik_failure'),
+            'diagnostic_shelf_ik_grid_enabled': LaunchConfiguration('diagnostic_shelf_ik_grid_enabled'),
+            'diagnostic_shelf_ik_grid_abort_after': LaunchConfiguration('diagnostic_shelf_ik_grid_abort_after'),
+            'diagnostic_shelf_ik_grid_use_collisions': LaunchConfiguration('diagnostic_shelf_ik_grid_use_collisions'),
+            'diagnostic_shelf_ik_grid_pitch_offsets_deg': LaunchConfiguration('diagnostic_shelf_ik_grid_pitch_offsets_deg'),
+            'diagnostic_shelf_ik_grid_x_values': LaunchConfiguration('diagnostic_shelf_ik_grid_x_values'),
+            'diagnostic_shelf_ik_grid_yaw_values_deg': LaunchConfiguration('diagnostic_shelf_ik_grid_yaw_values_deg'),
+            'pitch_offset_left_deg': LaunchConfiguration('pitch_offset_left_deg'),
+            'pitch_offset_right_deg': LaunchConfiguration('pitch_offset_right_deg'),
+            'dz_offset': LaunchConfiguration('dz_offset'),
+            'diagnostic_shelf_ik_grid_z_offsets': LaunchConfiguration('diagnostic_shelf_ik_grid_z_offsets'),
+            'shelf_pregrasp_distance': LaunchConfiguration('shelf_pregrasp_distance'),
+
+            # Wiring environment layout parameter keys
+            'env_shelf_center_x': LaunchConfiguration('env_shelf_center_x'),
+            'env_left_shelf_center_y': LaunchConfiguration('env_left_shelf_center_y'),
+            'env_right_shelf_center_y': LaunchConfiguration('env_right_shelf_center_y'),
+            'env_shelf_center_z': LaunchConfiguration('env_shelf_center_z'),
+            'env_shelf_size_x': LaunchConfiguration('env_shelf_size_x'),
+            'env_shelf_size_y': LaunchConfiguration('env_shelf_size_y'),
+            'env_shelf_size_z': LaunchConfiguration('env_shelf_size_z'),
+            'env_shelf_wall_thickness': LaunchConfiguration('env_shelf_wall_thickness'),
+            'env_shelf_num_levels': LaunchConfiguration('env_shelf_num_levels'),
+            'env_shelf_active_level_index': LaunchConfiguration('env_shelf_active_level_index'),
+            'env_table_center_x': LaunchConfiguration('env_table_center_x'),
+            'env_table_center_y': LaunchConfiguration('env_table_center_y'),
+            'env_table_center_z': LaunchConfiguration('env_table_center_z'),
+            'env_table_size_x': LaunchConfiguration('env_table_size_x'),
+            'env_table_size_y': LaunchConfiguration('env_table_size_y'),
+            'env_table_size_z': LaunchConfiguration('env_table_size_z'),
+        }]
+    )
+
+    # Static transform publisher node to publish object_frame (objeto_cubo) deterministically
+    static_tf_pub_node = Node(
+        package='tf2_ros',
+        executable='static_transform_publisher',
+        name='static_objeto_cubo_publisher',
+        arguments=['0.54', '0.33', '0.095', '0', '0', '0', '1', 'pelvis', 'objeto_cubo']
+    )
+
+    return LaunchDescription(declared_arguments + [
+        mover_brazo_single_node,
+        static_tf_pub_node
+    ])
