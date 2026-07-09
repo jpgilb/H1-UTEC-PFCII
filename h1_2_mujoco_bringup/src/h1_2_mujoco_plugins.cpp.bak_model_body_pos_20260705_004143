@@ -1,0 +1,305 @@
+#include <mutex>
+#include <string>
+#include <nlohmann/json.hpp>
+#include <std_msgs/msg/string.hpp>
+#include <mujoco_ros2_control_plugins/mujoco_ros2_control_plugins_base.hpp>
+#include <pluginlib/class_list_macros.hpp>
+
+namespace h1_2_mujoco_plugins
+{
+
+class ObjectSyncPlugin : public mujoco_ros2_control_plugins::MuJoCoROS2ControlPluginBase
+{
+public:
+  bool init(rclcpp::Node::SharedPtr node, const mjModel* model, mjData* data) override
+  {
+    node_ = node;
+
+    subscription_ = node_->create_subscription<std_msgs::msg::String>(
+      "/h1_demo/object_manipulation_state",
+      10,
+      std::bind(&ObjectSyncPlugin::topic_callback, this, std::placeholders::_1));
+
+    const int joint_id = mj_name2id(model, mjOBJ_JOINT, "visual_objeto_cubo_freejoint");
+    const int body_id = mj_name2id(model, mjOBJ_BODY, "visual_objeto_cubo");
+    int qpos_adr = -1;
+    int qvel_adr = -1;
+    int mocap_idx = -1;
+
+    if (joint_id != -1) {
+      qpos_adr = model->jnt_qposadr[joint_id];
+      qvel_adr = model->jnt_dofadr[joint_id];
+    }
+
+    if (body_id != -1) {
+      mocap_idx = model->body_mocapid[body_id];
+    }
+
+    double bx = -999.0;
+    double by = -999.0;
+    double bz = -999.0;
+
+    if (body_id != -1) {
+      bx = data->xpos[3 * body_id + 0];
+      by = data->xpos[3 * body_id + 1];
+      bz = data->xpos[3 * body_id + 2];
+    }
+
+    RCLCPP_WARN(
+      node_->get_logger(),
+      "[ObjectSyncPlugin UPDATE] mode=%s msg_count=%d update_count=%d | "
+      "target_pos=[%.4f %.4f %.4f] quat=[%.4f %.4f %.4f %.4f] | "
+      "joint_id=%d qpos_adr=%d | body_id=%d mocap_idx=%d | "
+      "body_xpos=[%.4f %.4f %.4f]",
+      mode_.c_str(), msg_count_, update_count_,
+      x_, y_, z_, qw_, qx_, qy_, qz_,
+      joint_id, qpos_adr, body_id, mocap_idx,
+      bx, by, bz);
+
+    return true;
+  }
+
+  void update(const mjModel* model, mjData* data) override
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!has_new_state_) {
+      return;
+    }
+
+    const int geom_id = mj_name2id(model, mjOBJ_GEOM, "visual_objeto_cubo_geom");
+
+
+  
+    int geom_bodyid = -1;
+    double gx = -999.0;
+    double gy = -999.0;
+    double gz = -999.0;
+
+    if (geom_id != -1) {
+      geom_bodyid = model->geom_bodyid[geom_id];
+      gx = data->geom_xpos[3 * geom_id + 0];
+      gy = data->geom_xpos[3 * geom_id + 1];
+      gz = data->geom_xpos[3 * geom_id + 2];
+    }
+
+    update_count_++;
+    bool wrote_pose = false;
+
+    const int joint_id = mj_name2id(model, mjOBJ_JOINT, "visual_objeto_cubo_freejoint");
+    int qpos_adr = -1;
+    int qvel_adr = -1;
+
+    if (joint_id != -1) {
+      qpos_adr = model->jnt_qposadr[joint_id];
+      qvel_adr = model->jnt_dofadr[joint_id];
+
+      if (qpos_adr != -1) {
+        data->qpos[qpos_adr + 0] = x_;
+        data->qpos[qpos_adr + 1] = y_;
+        data->qpos[qpos_adr + 2] = z_;
+        data->qpos[qpos_adr + 3] = qw_;
+        data->qpos[qpos_adr + 4] = qx_;
+        data->qpos[qpos_adr + 5] = qy_;
+        data->qpos[qpos_adr + 6] = qz_;
+
+        if (qvel_adr != -1) {
+          for (int k = 0; k < 6; ++k) {
+            data->qvel[qvel_adr + k] = 0.0;
+          }
+        }
+
+        wrote_pose = true;
+      }
+    }
+
+    const int body_id = mj_name2id(model, mjOBJ_BODY, "visual_objeto_cubo");
+    int mocap_idx = -1;
+
+    if (body_id != -1) {
+      mocap_idx = model->body_mocapid[body_id];
+
+      if (mocap_idx != -1) {
+        data->mocap_pos[3 * mocap_idx + 0] = x_;
+        data->mocap_pos[3 * mocap_idx + 1] = y_;
+        data->mocap_pos[3 * mocap_idx + 2] = z_;
+
+        data->mocap_quat[4 * mocap_idx + 0] = qw_;
+        data->mocap_quat[4 * mocap_idx + 1] = qx_;
+        data->mocap_quat[4 * mocap_idx + 2] = qy_;
+        data->mocap_quat[4 * mocap_idx + 3] = qz_;
+
+        wrote_pose = true;
+      }
+    }
+
+    auto read_geom_xpos = [&](double &gx, double &gy, double &gz) {
+      gx = gy = gz = -999.0;
+      if (geom_id != -1) {
+        gx = data->geom_xpos[3 * geom_id + 0];
+        gy = data->geom_xpos[3 * geom_id + 1];
+        gz = data->geom_xpos[3 * geom_id + 2];
+      }
+    };
+
+    double gx0, gy0, gz0;
+    double gx1, gy1, gz1;
+    double gx2, gy2, gz2;
+
+    read_geom_xpos(gx0, gy0, gz0);
+
+    if (wrote_pose) {
+      mj_forward(model, data);
+    }
+
+    read_geom_xpos(gx1, gy1, gz1);
+
+    if (wrote_pose && geom_id != -1) {
+      data->geom_xpos[3 * geom_id + 0] = x_;
+      data->geom_xpos[3 * geom_id + 1] = y_;
+      data->geom_xpos[3 * geom_id + 2] = z_;
+    }
+
+    read_geom_xpos(gx2, gy2, gz2);  
+        
+    if (wrote_pose) {
+      mj_forward(model, data);
+
+      const int forced_geom_id = mj_name2id(model, mjOBJ_GEOM, "visual_objeto_cubo_geom");
+      if (forced_geom_id != -1) {
+        // Forzar posición visual del geom renderizado.
+        data->geom_xpos[3 * forced_geom_id + 0] = x_;
+        data->geom_xpos[3 * forced_geom_id + 1] = y_;
+        data->geom_xpos[3 * forced_geom_id + 2] = z_;
+
+        // Convertir quaternion [w, x, y, z] a matriz de rotación 3x3.
+        const double ww = qw_ * qw_;
+        const double xx = qx_ * qx_;
+        const double yy = qy_ * qy_;
+        const double zz = qz_ * qz_;
+
+        const double wx = qw_ * qx_;
+        const double wy = qw_ * qy_;
+        const double wz = qw_ * qz_;
+        const double xy = qx_ * qy_;
+        const double xz = qx_ * qz_;
+        const double yz = qy_ * qz_;
+
+        data->geom_xmat[9 * forced_geom_id + 0] = ww + xx - yy - zz;
+        data->geom_xmat[9 * forced_geom_id + 1] = 2.0 * (xy - wz);
+        data->geom_xmat[9 * forced_geom_id + 2] = 2.0 * (xz + wy);
+
+        data->geom_xmat[9 * forced_geom_id + 3] = 2.0 * (xy + wz);
+        data->geom_xmat[9 * forced_geom_id + 4] = ww - xx + yy - zz;
+        data->geom_xmat[9 * forced_geom_id + 5] = 2.0 * (yz - wx);
+
+        data->geom_xmat[9 * forced_geom_id + 6] = 2.0 * (xz - wy);
+        data->geom_xmat[9 * forced_geom_id + 7] = 2.0 * (yz + wx);
+        data->geom_xmat[9 * forced_geom_id + 8] = ww - xx - yy + zz;
+      }
+    }
+
+    if (update_count_ % 100 == 0) {
+      double bx = -999.0;
+      double by = -999.0;
+      double bz = -999.0;
+
+      double qxpos = -999.0;
+      double qypos = -999.0;
+      double qzpos = -999.0;
+
+      if (qpos_adr != -1) {
+        qxpos = data->qpos[qpos_adr + 0];
+        qypos = data->qpos[qpos_adr + 1];
+        qzpos = data->qpos[qpos_adr + 2];
+      }
+
+      if (body_id != -1) {
+        bx = data->xpos[3 * body_id + 0];
+        by = data->xpos[3 * body_id + 1];
+        bz = data->xpos[3 * body_id + 2];
+      }
+
+
+      RCLCPP_WARN(
+        node_->get_logger(),
+        "[ObjectSyncPlugin GEOM TRACE] target=[%.4f %.4f %.4f] | "
+        "body_xpos=[%.4f %.4f %.4f] | "
+        "geom_before=[%.4f %.4f %.4f] | "
+        "geom_after_forward=[%.4f %.4f %.4f] | "
+        "geom_after_force=[%.4f %.4f %.4f] | "
+        "geom_id=%d geom_bodyid=%d wrote_pose=%s",
+        x_, y_, z_,
+        bx, by, bz,
+        gx0, gy0, gz0,
+        gx1, gy1, gz1,
+        gx2, gy2, gz2,
+        geom_id, geom_bodyid,
+        wrote_pose ? "true" : "false");
+    }
+  }
+
+  void cleanup() override
+  {
+    subscription_.reset();
+  }
+
+private:
+  void topic_callback(const std_msgs::msg::String::SharedPtr msg)
+  {
+    try {
+      auto json_data = nlohmann::json::parse(msg->data);
+
+      std::lock_guard<std::mutex> lock(mutex_);
+
+      if (json_data.contains("mode")) {
+        mode_ = json_data["mode"].get<std::string>();
+      }
+
+      if (json_data.contains("position") && json_data.contains("orientation")) {
+        x_ = json_data["position"][0].get<double>();
+        y_ = json_data["position"][1].get<double>();
+        z_ = json_data["position"][2].get<double>();
+
+        qw_ = json_data["orientation"][0].get<double>();
+        qx_ = json_data["orientation"][1].get<double>();
+        qy_ = json_data["orientation"][2].get<double>();
+        qz_ = json_data["orientation"][3].get<double>();
+
+        has_new_state_ = true;
+        msg_count_++;
+
+        if (msg_count_ <= 5 || msg_count_ % 50 == 0) {
+          RCLCPP_WARN(
+            node_->get_logger(),
+            "[ObjectSyncPlugin CALLBACK] msg_count=%d mode=%s | "
+            "pos=[%.4f %.4f %.4f] quat=[%.4f %.4f %.4f %.4f]",
+            msg_count_, mode_.c_str(), x_, y_, z_, qw_, qx_, qy_, qz_);
+        }
+      } else {
+        RCLCPP_ERROR(
+          node_->get_logger(),
+          "[ObjectSyncPlugin CALLBACK] JSON sin campos position/orientation: %s",
+          msg->data.c_str());
+      }
+    } catch (const std::exception& e) {
+      RCLCPP_ERROR(node_->get_logger(), "Error parsing ObjectSync msg: %s", e.what());
+    }
+  }
+
+  rclcpp::Node::SharedPtr node_;
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr subscription_;
+
+  std::mutex mutex_;
+  std::string mode_ = "WORLD";
+
+  double x_ = 0.54, y_ = 0.30, z_ = 0.08;
+  double qw_ = 1.0, qx_ = 0.0, qy_ = 0.0, qz_ = 0.0;
+
+  bool has_new_state_ = false;
+  int msg_count_ = 0;
+  int update_count_ = 0;
+};
+
+}  // namespace h1_2_mujoco_plugins
+
+PLUGINLIB_EXPORT_CLASS(h1_2_mujoco_plugins::ObjectSyncPlugin, mujoco_ros2_control_plugins::MuJoCoROS2ControlPluginBase)
