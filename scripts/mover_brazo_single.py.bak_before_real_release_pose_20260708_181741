@@ -307,9 +307,6 @@ class SingleArmFaceApproachGraspNode(Node):
         self.declare_parameter('debug_start_table_to_target', False)
         self.declare_parameter('phase8_shelf_transit_z_override', -1.0)
         self.declare_parameter('defer_shelf_place_yaw_until_preinsert', True)
-        self.declare_parameter('defer_phase8_orientation_until_preplace', True)
-        self.declare_parameter('phase8_orientation_defer_threshold_deg', 5.0)
-        self.declare_parameter('phase8_direct_preplace_first_enabled', True)
 
         # ======================================================================
         # 10. PARÁMETROS DE ARUCO Y REFERENCIA DE OBJETO (Requerimiento A)
@@ -349,16 +346,8 @@ class SingleArmFaceApproachGraspNode(Node):
         # ======================================================================
         self.declare_parameter('confirm_hand_open_before_detach', True)
         self.declare_parameter('release_settle_time', 7)
-        self.declare_parameter('hand_open_position_tolerance', 0.02)
+        self.declare_parameter('hand_open_position_tolerance', 0.005)
         self.declare_parameter('allow_detach_without_hand_joint_feedback', False)
-        self.declare_parameter('register_release_pose_from_attached_tcp', True)
-        self.declare_parameter('use_registered_release_pose_for_next_stage', True)
-        self.declare_parameter('phase12_disable_release_acm_before_retreat', True)
-        self.declare_parameter('force_table_phase12_retreat_before_home', True)
-        self.declare_parameter('clamp_table_release_z_to_support', True)
-        self.declare_parameter('table_release_z_clamp_tolerance', 0.002)
-        self.declare_parameter('table_release_z_clearance_margin', 0.0)
-        self.declare_parameter('publish_object_state_only_after_initial_tf', True)
 
         # ======================================================================
         # 12. PARÁMETROS DE VALIDACIÓN GEOMÉTRICA DE TCP Y COLOCACIÓN MESA
@@ -392,20 +381,6 @@ class SingleArmFaceApproachGraspNode(Node):
         self.declare_parameter('ompl_joint_goal_tolerance', 0.015)
         self.declare_parameter('ompl_pipeline_id', 'ompl')
         self.declare_parameter('ompl_planner_id', '')
-
-        # ======================================================================
-        # 15. PERFIL DINÁMICO LOCAL PARA INTERACCIÓN CERCANA CON OBJETO
-        # ======================================================================
-        self.declare_parameter('near_object_motion_slowdown_enabled', True)
-        self.declare_parameter('phase2_near_object_velocity_scaling', 0.055)
-        self.declare_parameter('phase2_near_object_acceleration_scaling', 0.040)
-        self.declare_parameter('phase4_near_object_velocity_scaling', 0.035)
-        self.declare_parameter('phase4_near_object_acceleration_scaling', 0.025)
-        self.declare_parameter('phase7_near_object_velocity_scaling', 0.055)
-        self.declare_parameter('phase7_near_object_acceleration_scaling', 0.040)
-        self.declare_parameter('phase9_near_object_velocity_scaling', 0.045)
-        self.declare_parameter('phase9_near_object_acceleration_scaling', 0.030)
-        self.declare_parameter('cartesian_near_object_time_scale', 2.0)
 
         # --------------------------
         # CARGAR VALORES DE PARÁMETROS
@@ -586,9 +561,6 @@ class SingleArmFaceApproachGraspNode(Node):
         self.debug_start_table_to_target = bool(self.get_parameter('debug_start_table_to_target').value)
         self.phase8_shelf_transit_z_override = float(self.get_parameter('phase8_shelf_transit_z_override').value)
         self.defer_shelf_place_yaw_until_preinsert = bool(self.get_parameter('defer_shelf_place_yaw_until_preinsert').value)
-        self.defer_phase8_orientation_until_preplace = bool(self.get_parameter('defer_phase8_orientation_until_preplace').value)
-        self.phase8_orientation_defer_threshold_deg = float(self.get_parameter('phase8_orientation_defer_threshold_deg').value)
-        self.phase8_direct_preplace_first_enabled = bool(self.get_parameter('phase8_direct_preplace_first_enabled').value)
 
         self.use_aruco_table_target = bool(self.get_parameter('use_aruco_table_target').value)
         self.table_target_frame = str(self.get_parameter('table_target_frame').value)
@@ -625,14 +597,6 @@ class SingleArmFaceApproachGraspNode(Node):
         self.release_settle_time = float(self.get_parameter('release_settle_time').value)
         self.hand_open_position_tolerance = float(self.get_parameter('hand_open_position_tolerance').value)
         self.allow_detach_without_hand_joint_feedback = bool(self.get_parameter('allow_detach_without_hand_joint_feedback').value)
-        self.register_release_pose_from_attached_tcp = bool(self.get_parameter('register_release_pose_from_attached_tcp').value)
-        self.use_registered_release_pose_for_next_stage = bool(self.get_parameter('use_registered_release_pose_for_next_stage').value)
-        self.phase12_disable_release_acm_before_retreat = bool(self.get_parameter('phase12_disable_release_acm_before_retreat').value)
-        self.force_table_phase12_retreat_before_home = bool(self.get_parameter('force_table_phase12_retreat_before_home').value)
-        self.clamp_table_release_z_to_support = bool(self.get_parameter('clamp_table_release_z_to_support').value)
-        self.table_release_z_clamp_tolerance = float(self.get_parameter('table_release_z_clamp_tolerance').value)
-        self.table_release_z_clearance_margin = float(self.get_parameter('table_release_z_clearance_margin').value)
-        self.publish_object_state_only_after_initial_tf = bool(self.get_parameter('publish_object_state_only_after_initial_tf').value)
 
         self.validate_tcp_before_detach = bool(self.get_parameter('validate_tcp_before_detach').value)
         self.tcp_place_position_tolerance = float(self.get_parameter('tcp_place_position_tolerance').value)
@@ -662,18 +626,6 @@ class SingleArmFaceApproachGraspNode(Node):
         self.ompl_pipeline_id = str(self.get_parameter('ompl_pipeline_id').value).strip()
         self.ompl_planner_id = str(self.get_parameter('ompl_planner_id').value).strip()
 
-        # PERFIL DINÁMICO LOCAL PARA INTERACCIÓN CERCANA CON OBJETO
-        self.near_object_motion_slowdown_enabled = bool(self.get_parameter('near_object_motion_slowdown_enabled').value)
-        self.phase2_near_object_velocity_scaling = float(self.get_parameter('phase2_near_object_velocity_scaling').value)
-        self.phase2_near_object_acceleration_scaling = float(self.get_parameter('phase2_near_object_acceleration_scaling').value)
-        self.phase4_near_object_velocity_scaling = float(self.get_parameter('phase4_near_object_velocity_scaling').value)
-        self.phase4_near_object_acceleration_scaling = float(self.get_parameter('phase4_near_object_acceleration_scaling').value)
-        self.phase7_near_object_velocity_scaling = float(self.get_parameter('phase7_near_object_velocity_scaling').value)
-        self.phase7_near_object_acceleration_scaling = float(self.get_parameter('phase7_near_object_acceleration_scaling').value)
-        self.phase9_near_object_velocity_scaling = float(self.get_parameter('phase9_near_object_velocity_scaling').value)
-        self.phase9_near_object_acceleration_scaling = float(self.get_parameter('phase9_near_object_acceleration_scaling').value)
-        self.cartesian_near_object_time_scale = float(self.get_parameter('cartesian_near_object_time_scale').value)
-
         # Validaciones OMPL
         if self.ompl_num_planning_attempts < 1:
             raise ValueError(f"ompl_num_planning_attempts ({self.ompl_num_planning_attempts}) debe ser >= 1")
@@ -688,26 +640,6 @@ class SingleArmFaceApproachGraspNode(Node):
 
         if self.ompl_pipeline_id == '':
             self.ompl_pipeline_id = 'ompl'
-
-        # Validaciones del perfil dinámico local.
-        # No modifica el perfil global OMPL; solo ajusta fases cercanas al objeto.
-        for _name, _value in [
-            ('phase2_near_object_velocity_scaling', self.phase2_near_object_velocity_scaling),
-            ('phase2_near_object_acceleration_scaling', self.phase2_near_object_acceleration_scaling),
-            ('phase4_near_object_velocity_scaling', self.phase4_near_object_velocity_scaling),
-            ('phase4_near_object_acceleration_scaling', self.phase4_near_object_acceleration_scaling),
-            ('phase7_near_object_velocity_scaling', self.phase7_near_object_velocity_scaling),
-            ('phase7_near_object_acceleration_scaling', self.phase7_near_object_acceleration_scaling),
-            ('phase9_near_object_velocity_scaling', self.phase9_near_object_velocity_scaling),
-            ('phase9_near_object_acceleration_scaling', self.phase9_near_object_acceleration_scaling),
-        ]:
-            if not (0.0 < float(_value) <= 1.0):
-                raise ValueError(f"{_name} ({_value}) debe estar en (0.0, 1.0]")
-
-        if self.cartesian_near_object_time_scale < 1.0:
-            raise ValueError(
-                f"cartesian_near_object_time_scale ({self.cartesian_near_object_time_scale}) debe ser >= 1.0"
-            )
 
         # Parsear y validar la cola
         self.object_queue = []
@@ -824,7 +756,6 @@ class SingleArmFaceApproachGraspNode(Node):
         self.object_position = np.zeros(3, dtype=float)
         self.object_yaw_rad = 0.0
         self.object_quat_xyzw = np.array([0.0, 0.0, 0.0, 1.0], dtype=float)
-        self.object_state_ready = False
 
         self.raw_object_position = np.zeros(3, dtype=float)
         self.last_aruco_table_position = np.zeros(3, dtype=float)
@@ -833,14 +764,6 @@ class SingleArmFaceApproachGraspNode(Node):
         self.last_table_destination = np.zeros(3, dtype=float)
         self.last_valid_table_surface_z = None
         self.hand_open_confirmed = False
-        self.last_registered_object_valid = False
-        self.last_registered_object_position = np.zeros(3, dtype=float)
-        self.last_registered_object_yaw_rad = 0.0
-        self.last_registered_object_error_xyz = np.zeros(3, dtype=float)
-        self.last_registered_object_error_yaw_rad = 0.0
-        self.last_registered_object_raw_position = np.zeros(3, dtype=float)
-        self.last_registered_object_error_xyz_raw = np.zeros(3, dtype=float)
-        self.last_registered_table_z_clamp_applied = False
 
         # Variables de control para transferencia bimanual
         self.initial_object_position = np.zeros(3, dtype=float)
@@ -870,10 +793,6 @@ class SingleArmFaceApproachGraspNode(Node):
         self.phase8_staged_active = False
         self.phase8_shelf_deferred_yaw_pending = False
         self.phase8_shelf_transport_quat = np.array([0.0, 0.0, 0.0, 1.0], dtype=float)
-        self.phase8_deferred_orientation_pending = False
-        self.phase8_transport_quat = np.array([0.0, 0.0, 0.0, 1.0], dtype=float)
-        self.phase8_direct_preplace_pending_fallback = False
-        self.phase8_direct_preplace_skip_once = False
 
         # Estado de cola de objetos
         self.active_queued_object = None
@@ -1373,28 +1292,8 @@ class SingleArmFaceApproachGraspNode(Node):
         self.tcp_place = np.zeros(3, dtype=float)
         self.tcp_place_above = np.zeros(3, dtype=float)
 
-        if (
-            self.use_registered_release_pose_for_next_stage
-            and getattr(self, 'last_registered_object_valid', False)
-        ):
-            self.object_position = self.last_registered_object_position.copy()
-            self.object_yaw_rad = float(self.last_registered_object_yaw_rad)
-            self.get_logger().warn(
-                "[REAL RELEASE POSE] Segunda etapa usará la pose realmente registrada en mesa, "
-                "no el destino ideal.\n"
-                f"  object_position_real: {self.object_position.tolist()}\n"
-                f"  object_yaw_real_deg: {math.degrees(self.object_yaw_rad):.2f}\n"
-                f"  error_xyz_vs_target: {self.last_registered_object_error_xyz.tolist()}\n"
-                f"  error_yaw_vs_target_deg: {math.degrees(self.last_registered_object_error_yaw_rad):.2f}"
-            )
-        else:
-            self.object_position = self.place_object_center.copy()
-            self.object_yaw_rad = self.target_object_yaw_rad
-            self.get_logger().warn(
-                "[REAL RELEASE POSE] Fallback: segunda etapa usará place_object_center ideal "
-                "porque no hay pose real registrada válida."
-            )
-
+        self.object_position = self.place_object_center.copy()
+        self.object_yaw_rad = self.target_object_yaw_rad
         self.transfer_stage = 'table_to_target'
 
         # Segunda etapa bimanual:
@@ -1765,12 +1664,6 @@ class SingleArmFaceApproachGraspNode(Node):
                     )
                     self.abortar_objeto_actual('Error de consistencia: Brazo DERECHO seleccionado pero place_y es positivo')
                     return
-
-            self.object_state_ready = True
-            self.get_logger().warn(
-                "[OBJECT STATE GATE] TF inicial del objeto confirmado. "
-                "Se habilita publicación a /h1_demo/object_manipulation_state."
-            )
 
             self.configurar_brazo_activo(self.arm_side)
 
@@ -2320,14 +2213,8 @@ class SingleArmFaceApproachGraspNode(Node):
                 self.abortar_objeto_actual("Servidor de acción /execute_trajectory no disponible")
                 return False
                 
-            trajectory_to_execute = self.aplicar_time_scaling_cartesiano_near_object(
-                response.solution,
-                phase,
-                label
-            )
-
             goal_msg = ExecuteTrajectory.Goal()
-            goal_msg.trajectory = trajectory_to_execute
+            goal_msg.trajectory = response.solution
             
             future = self.execute_trajectory_client.send_goal_async(goal_msg)
             future.add_done_callback(self.cartesian_execute_goal_response_callback)
@@ -2567,7 +2454,6 @@ class SingleArmFaceApproachGraspNode(Node):
             self.finalizar_cola_de_objetos()
             return
 
-        self.object_state_ready = False
         self.active_queued_object = next_obj
         self.executed_order_frames.append(next_obj.frame)
         
@@ -2690,12 +2576,6 @@ class SingleArmFaceApproachGraspNode(Node):
             self.get_logger().info(f'[OBJECT QUEUE] Brazo único configurado según Y: {self.arm_side.upper()}')
 
         next_obj.initial_arm = self.initial_arm_side if self.task_mode == 'bimanual_transfer' else self.arm_side
-        self.object_state_ready = True
-        self.get_logger().warn(
-            "[OBJECT STATE GATE] Objeto activo de cola inicializado. "
-            "Se habilita publicación a /h1_demo/object_manipulation_state."
-        )
-
         self.configurar_brazo_activo(self.arm_side)
         
         # Descriptor de tarea del nuevo objeto activo
@@ -2773,15 +2653,6 @@ class SingleArmFaceApproachGraspNode(Node):
             elif self.cartesian_motion_context == "phase7_done":
                 self.schedule_next_phase_after_settle()
             elif self.cartesian_motion_context == "phase8_done":
-                if (
-                    self.current_phase == 8
-                    and self.phase8_deferred_orientation_pending
-                    and self.debe_diferir_orientacion_fase8_hasta_preplace()
-                ):
-                    self.ejecutar_alineacion_orientacion_preplace()
-                    return
-
-                self.phase8_direct_preplace_pending_fallback = False
                 self.schedule_next_phase_after_settle()
             elif self.cartesian_motion_context == "phase9_shelf_insert_lifted_done":
                 self.shelf_place_insert_lifted_done = True
@@ -3859,46 +3730,6 @@ class SingleArmFaceApproachGraspNode(Node):
             'El objeto interno carece de touch_links en los dedos para simular sensor propioceptivo en RViz.'
         )
 
-    def calcular_pose_objeto_attached_actual(self):
-        """
-        Calcula la pose real actual del objeto usando:
-          T_world_object = T_world_tcp * T_tcp_object
-
-        T_tcp_object fue capturado en el attach. Esta pose refleja la pose
-        realmente alcanzada por el TCP, no el destino cartesiano ideal.
-        """
-        pose_actual = self.obtener_pose_tcp_actual()
-        if pose_actual is None:
-            self.get_logger().warn(
-                "[REAL RELEASE POSE] No se pudo obtener pose TCP actual para calcular pose real del objeto."
-            )
-            return None
-
-        tcp_pos, tcp_quat = self.pose_to_np(pose_actual)
-
-        try:
-            R_world_tcp = R.from_quat(tcp_quat).as_matrix()
-            p_world_tcp = tcp_pos
-
-            R_world_object = R_world_tcp.dot(self.attached_R_tcp_object)
-            p_world_object = R_world_tcp.dot(self.attached_p_tcp_object) + p_world_tcp
-
-            quat_object = R.from_matrix(R_world_object).as_quat()
-            yaw_object = float(R.from_matrix(R_world_object).as_euler('xyz', degrees=False)[2])
-
-            if np.any(np.isnan(p_world_object)) or np.any(np.isinf(p_world_object)):
-                self.get_logger().warn("[REAL RELEASE POSE] Pose calculada contiene NaN/Inf.")
-                return None
-
-            return p_world_object.astype(float), yaw_object, quat_object.astype(float)
-
-        except Exception as exc:
-            self.get_logger().warn(f"[REAL RELEASE POSE] Falló cálculo de pose real attached: {exc}")
-            return None
-
-    def normalizar_angulo_rad(self, angle_rad: float) -> float:
-        return math.atan2(math.sin(angle_rad), math.cos(angle_rad))
-
     def registrar_objeto_en_destino(self) -> None:
         pose_actual = self.obtener_pose_tcp_actual()
         tcp_actual_str = "No disponible"
@@ -3914,24 +3745,6 @@ class SingleArmFaceApproachGraspNode(Node):
             f"  stage actual (transfer_stage): {self.transfer_stage}"
         )
         self.get_logger().info('Registrando objeto en el destino final/mesa...')
-
-        release_pose_actual = None
-        if self.register_release_pose_from_attached_tcp:
-            release_pose_actual = self.calcular_pose_objeto_attached_actual()
-            if release_pose_actual is not None:
-                release_pos_dbg, release_yaw_dbg, _ = release_pose_actual
-                self.get_logger().warn(
-                    "[REAL RELEASE POSE] Pose real calculada antes del detach. "
-                    "Esta pose se usará para registrar el objeto en WORLD.\n"
-                    f"  release_position_real: {release_pos_dbg.tolist()}\n"
-                    f"  release_yaw_real_deg: {math.degrees(release_yaw_dbg):.2f}\n"
-                    f"  target_position_ideal: {self.place_object_center.tolist()}\n"
-                    f"  target_yaw_ideal_deg: {math.degrees(self.target_object_yaw_rad):.2f}"
-                )
-            else:
-                self.get_logger().warn(
-                    "[REAL RELEASE POSE] No se pudo calcular pose real; se usará destino ideal como fallback."
-                )
 
         # 1. Remover objetos attached
         aco_manipulado_remove = AttachedCollisionObject()
@@ -3955,83 +3768,9 @@ class SingleArmFaceApproachGraspNode(Node):
             return
 
         # 2. Actualizar posiciones
-        expected_position = self.place_object_center.copy()
-        expected_yaw = float(self.target_object_yaw_rad)
-
-        if release_pose_actual is not None:
-            release_pos, release_yaw, _ = release_pose_actual
-            self.object_position = np.array(release_pos, dtype=float)
-            self.object_yaw_rad = float(release_yaw if self.object_type == 'cube' else expected_yaw)
-            release_source = "attached_tcp_actual"
-        else:
-            self.object_position = expected_position.copy()
-            self.object_yaw_rad = expected_yaw
-            release_source = "ideal_fallback"
-
+        self.object_position = self.place_object_center.copy()
+        self.object_yaw_rad = self.target_object_yaw_rad
         self.object_is_attached = False
-
-        # [TABLE RELEASE Z SUPPORT CLAMP]
-        # La pose real desde TCP mide el error cinemático de liberación, pero no
-        # simula contacto físico contra la mesa. Un cubo no puede quedar con su
-        # centro por debajo de la altura de apoyo esperada; si ocurre, se conserva
-        # X/Y/yaw reales y se corrige solo Z para no contaminar el pick del segundo brazo.
-        registered_position_raw = self.object_position.copy()
-        release_error_xyz_raw = registered_position_raw - expected_position
-        z_clamp_applied = False
-        z_before_clamp = float(self.object_position[2])
-        z_after_clamp = z_before_clamp
-
-        place_mode_eff = self.obtener_place_geometry_mode_efectivo()
-        if (
-            self.clamp_table_release_z_to_support
-            and self.transfer_stage == 'source_to_table'
-            and place_mode_eff == 'table'
-            and self.object_type == 'cube'
-        ):
-            z_support_center = float(expected_position[2] + self.table_release_z_clearance_margin)
-            z_tolerance = max(0.0, float(self.table_release_z_clamp_tolerance))
-
-            if float(self.object_position[2]) < (z_support_center - z_tolerance):
-                self.object_position[2] = z_support_center
-                z_after_clamp = float(self.object_position[2])
-                z_clamp_applied = True
-
-                self.get_logger().warn(
-                    "[TABLE RELEASE Z SUPPORT CLAMP] Cubo liberado con Z físicamente inválida para mesa. "
-                    "Se corrige solo Z para evitar penetración en mesa y no contaminar el pick del segundo brazo.\n"
-                    f"  place_mode_eff: {place_mode_eff}\n"
-                    f"  expected_center_z: {float(expected_position[2]):.5f}\n"
-                    f"  raw_registered_z: {z_before_clamp:.5f}\n"
-                    f"  clamped_registered_z: {z_after_clamp:.5f}\n"
-                    f"  raw_error_z: {float(release_error_xyz_raw[2]):.5f} m\n"
-                    f"  clamp_tolerance: {z_tolerance:.5f} m\n"
-                    f"  object_half_height: {self.object_contact_radius():.5f} m\n"
-                    "  X/Y/yaw se mantienen desde release real."
-                )
-
-        self.last_registered_object_valid = True
-        self.last_registered_object_raw_position = registered_position_raw.copy()
-        self.last_registered_object_error_xyz_raw = release_error_xyz_raw.copy()
-        self.last_registered_table_z_clamp_applied = bool(z_clamp_applied)
-        self.last_registered_object_position = self.object_position.copy()
-        self.last_registered_object_yaw_rad = float(self.object_yaw_rad)
-        self.last_registered_object_error_xyz = self.object_position - expected_position
-        self.last_registered_object_error_yaw_rad = self.normalizar_angulo_rad(self.object_yaw_rad - expected_yaw)
-
-        self.get_logger().warn(
-            "[REAL RELEASE POSE] Registro de objeto en WORLD.\n"
-            f"  release_source: {release_source}\n"
-            f"  expected_position: {expected_position.tolist()}\n"
-            f"  registered_position: {self.object_position.tolist()}\n"
-            f"  error_xyz: {self.last_registered_object_error_xyz.tolist()}\n"
-            f"  error_norm_xyz: {float(np.linalg.norm(self.last_registered_object_error_xyz)):.5f} m\n"
-            f"  raw_registered_position_before_z_clamp: {self.last_registered_object_raw_position.tolist()}\n"
-            f"  raw_error_xyz_before_z_clamp: {self.last_registered_object_error_xyz_raw.tolist()}\n"
-            f"  table_z_clamp_applied: {self.last_registered_table_z_clamp_applied}\n"
-            f"  expected_yaw_deg: {math.degrees(expected_yaw):.2f}\n"
-            f"  registered_yaw_deg: {math.degrees(self.object_yaw_rad):.2f}\n"
-            f"  error_yaw_deg: {math.degrees(self.last_registered_object_error_yaw_rad):.2f}"
-        )
 
         # 3. Construir CollisionObjects usando crear_pose_objeto_en(self.object_position, self.object_yaw_rad)
         obj_main = CollisionObject()
@@ -4360,16 +4099,7 @@ class SingleArmFaceApproachGraspNode(Node):
             f"  shelf_insert_motion_mode: {self.shelf_insert_motion_mode}\n"
             f"  shelf_post_place_retreat_motion_mode: {self.shelf_post_place_retreat_motion_mode}\n"
             f"  pending_phase12_shelf_retreat_motion: {self.pending_phase12_shelf_retreat_motion}\n"
-            f"  register_release_pose_from_attached_tcp: {self.register_release_pose_from_attached_tcp}\n"
-            f"  use_registered_release_pose_for_next_stage: {self.use_registered_release_pose_for_next_stage}\n"
-            f"  publish_object_state_only_after_initial_tf: {self.publish_object_state_only_after_initial_tf}\n"
-            f"  object_state_ready: {self.object_state_ready}\n"
-            f"  last_registered_object_valid: {self.last_registered_object_valid}\n"
             f"  defer_shelf_place_yaw_until_preinsert: {self.defer_shelf_place_yaw_until_preinsert}\n"
-            f"  defer_phase8_orientation_until_preplace: {self.defer_phase8_orientation_until_preplace}\n"
-            f"  phase8_orientation_defer_threshold_deg: {self.phase8_orientation_defer_threshold_deg:.2f}\n"
-            f"  phase8_deferred_orientation_pending: {self.phase8_deferred_orientation_pending}\n"
-            f"  phase8_direct_preplace_first_enabled: {self.phase8_direct_preplace_first_enabled}\n"
             f"  phase8_shelf_deferred_yaw_pending: {self.phase8_shelf_deferred_yaw_pending}\n"
             f"  shelf_pregrasp_distance: {self.shelf_pregrasp_distance:.4f}\n"
             f"  ompl_num_planning_attempts: {self.ompl_num_planning_attempts}\n"
@@ -4678,117 +4408,12 @@ class SingleArmFaceApproachGraspNode(Node):
             )
         return target_names, target_positions
 
-    def obtener_perfil_dinamico_por_fase(self, phase: int) -> Tuple[float, float, str]:
-        """
-        Devuelve el perfil dinámico efectivo para MoveGroup/OMPL.
-
-        Local por fase: no cambia el perfil global del proyecto ni afecta fases
-        de tránsito lejos del objeto. Reduce energía de ejecución cerca del cubo.
-        """
-        base_vel = float(self.ompl_max_velocity_scaling_factor)
-        base_acc = float(self.ompl_max_acceleration_scaling_factor)
-
-        if not getattr(self, 'near_object_motion_slowdown_enabled', False):
-            return base_vel, base_acc, "GLOBAL_DEFAULT"
-
-        phase_profiles = {
-            2: (
-                float(self.phase2_near_object_velocity_scaling),
-                float(self.phase2_near_object_acceleration_scaling),
-                "NEAR_OBJECT_PHASE2_PREGRASP"
-            ),
-            4: (
-                float(self.phase4_near_object_velocity_scaling),
-                float(self.phase4_near_object_acceleration_scaling),
-                "NEAR_OBJECT_PHASE4_APPROACH"
-            ),
-            7: (
-                float(self.phase7_near_object_velocity_scaling),
-                float(self.phase7_near_object_acceleration_scaling),
-                "NEAR_OBJECT_PHASE7_RETREAT"
-            ),
-            9: (
-                float(self.phase9_near_object_velocity_scaling),
-                float(self.phase9_near_object_acceleration_scaling),
-                "NEAR_OBJECT_PHASE9_PLACE"
-            ),
-        }
-
-        if int(phase) not in phase_profiles:
-            return base_vel, base_acc, "GLOBAL_DEFAULT"
-
-        vel, acc, tag = phase_profiles[int(phase)]
-
-        # No permitir que el perfil local acelere por encima del perfil global.
-        vel_eff = min(max(float(vel), 1.0e-4), base_vel)
-        acc_eff = min(max(float(acc), 1.0e-4), base_acc)
-        return vel_eff, acc_eff, tag
-
-    def es_fase_cartesiana_near_object(self, phase: int) -> bool:
-        return (
-            bool(getattr(self, 'near_object_motion_slowdown_enabled', False))
-            and int(phase) in (4, 7, 9)
-            and float(getattr(self, 'cartesian_near_object_time_scale', 1.0)) > 1.0
-        )
-
-    def aplicar_time_scaling_cartesiano_near_object(self, trajectory, phase: int, label: str):
-        """
-        Escala los tiempos de una trayectoria cartesiana cercana al objeto.
-
-        No modifica geometría, waypoints, IK ni colisiones. Solo aumenta
-        time_from_start para disminuir velocidad/energía de ejecución.
-        """
-        if not self.es_fase_cartesiana_near_object(phase):
-            return trajectory
-
-        try:
-            points = trajectory.joint_trajectory.points
-        except Exception:
-            self.get_logger().warn(
-                f"[NEAR OBJECT DYNAMICS] No se pudo acceder a puntos de trayectoria cartesiana para {label}. "
-                "No se aplica time scaling."
-            )
-            return trajectory
-
-        if not points:
-            return trajectory
-
-        scale = float(self.cartesian_near_object_time_scale)
-        nonzero_time_points = 0
-
-        for pt in points:
-            dur = pt.time_from_start
-            total_ns = int(dur.sec) * 1000000000 + int(dur.nanosec)
-            if total_ns > 0:
-                nonzero_time_points += 1
-                scaled_ns = int(round(float(total_ns) * scale))
-                pt.time_from_start.sec = int(scaled_ns // 1000000000)
-                pt.time_from_start.nanosec = int(scaled_ns % 1000000000)
-
-        if nonzero_time_points == 0:
-            self.get_logger().warn(
-                f"[NEAR OBJECT DYNAMICS] Trayectoria cartesiana fase {phase} ({label}) no tiene timestamps no-cero. "
-                "No se pudo ralentizar por time_from_start."
-            )
-            return trajectory
-
-        self.get_logger().warn(
-            "[NEAR OBJECT DYNAMICS] Time scaling cartesiano aplicado.\n"
-            f"  phase: {phase}\n"
-            f"  label: {label}\n"
-            f"  scale: {scale:.3f}x\n"
-            f"  points_scaled: {nonzero_time_points}/{len(points)}"
-        )
-        return trajectory
-
     def enviar_meta_articular_brazo(self, names: List[str], positions: List[float], phase: int, label: str = "reposo neutral") -> None:
         self.current_phase = phase
         if not self.move_group_client.wait_for_server(timeout_sec=10.0):
             self.get_logger().error('Servidor MoveGroup no disponible.')
             self.abortar_objeto_actual("Servidor MoveGroup no disponible")
             return
-
-        vel_scale_eff, acc_scale_eff, dynamics_profile = self.obtener_perfil_dinamico_por_fase(phase)
 
         self.get_logger().info(
             f"[OMPL PLANNING] Planificación solicitada:\n"
@@ -4797,11 +4422,8 @@ class SingleArmFaceApproachGraspNode(Node):
             f"  Grupo activo: {self.cfg.arm_group}\n"
             f"  ompl_num_planning_attempts: {self.ompl_num_planning_attempts}\n"
             f"  ompl_allowed_planning_time: {self.ompl_allowed_planning_time:.4f}\n"
-            f"  ompl_max_velocity_scaling_factor_global: {self.ompl_max_velocity_scaling_factor:.4f}\n"
-            f"  ompl_max_acceleration_scaling_factor_global: {self.ompl_max_acceleration_scaling_factor:.4f}\n"
-            f"  effective_velocity_scaling_factor: {vel_scale_eff:.4f}\n"
-            f"  effective_acceleration_scaling_factor: {acc_scale_eff:.4f}\n"
-            f"  near_object_dynamics_profile: {dynamics_profile}\n"
+            f"  ompl_max_velocity_scaling_factor: {self.ompl_max_velocity_scaling_factor:.4f}\n"
+            f"  ompl_max_acceleration_scaling_factor: {self.ompl_max_acceleration_scaling_factor:.4f}\n"
             f"  ompl_joint_goal_tolerance: {self.ompl_joint_goal_tolerance:.4f}\n"
             f"  ompl_pipeline_id: {self.ompl_pipeline_id}\n"
             f"  ompl_planner_id: {self.ompl_planner_id if self.ompl_planner_id else 'MOVEIT_DEFAULT'}"
@@ -4815,8 +4437,8 @@ class SingleArmFaceApproachGraspNode(Node):
             req.planner_id = self.ompl_planner_id
         req.num_planning_attempts = self.ompl_num_planning_attempts
         req.allowed_planning_time = self.ompl_allowed_planning_time
-        req.max_velocity_scaling_factor = vel_scale_eff
-        req.max_acceleration_scaling_factor = acc_scale_eff
+        req.max_velocity_scaling_factor = self.ompl_max_velocity_scaling_factor
+        req.max_acceleration_scaling_factor = self.ompl_max_acceleration_scaling_factor
 
         constraints = Constraints()
         for name, pos in zip(names, positions):
@@ -4927,23 +4549,20 @@ class SingleArmFaceApproachGraspNode(Node):
                 else:
                     self.phase8_staged_active = False
                     if (
-                        self.phase8_deferred_orientation_pending
-                        and self.debe_diferir_orientacion_fase8_hasta_preplace()
+                        self.phase8_shelf_deferred_yaw_pending
+                        and self.debe_diferir_yaw_place_shelf_hasta_preinsert()
                     ):
-                        self.ejecutar_alineacion_orientacion_preplace()
+                        self.ejecutar_alineacion_yaw_shelf_preinsert()
                     else:
                         self.schedule_next_phase_after_settle()
                 return
             if (
                 self.current_phase == 8
-                and self.phase8_deferred_orientation_pending
-                and self.debe_diferir_orientacion_fase8_hasta_preplace()
+                and self.phase8_shelf_deferred_yaw_pending
+                and self.debe_diferir_yaw_place_shelf_hasta_preinsert()
             ):
-                self.ejecutar_alineacion_orientacion_preplace()
+                self.ejecutar_alineacion_yaw_shelf_preinsert()
                 return
-
-            if self.current_phase == 8:
-                self.phase8_direct_preplace_pending_fallback = False
 
             if self.current_phase == 12 and self.pending_phase12_shelf_retreat_motion:
                 self.pending_phase12_shelf_retreat_motion = False
@@ -5032,22 +4651,6 @@ class SingleArmFaceApproachGraspNode(Node):
                     )
                 self.schedule_next_phase_after_settle()
         else:
-            if self.current_phase == 8 and getattr(self, 'phase8_direct_preplace_pending_fallback', False):
-                self.get_logger().warn(
-                    "[PHASE 8 DIRECT-FIRST FALLBACK] El plan directo a pre-place falló en MoveIt. "
-                    "Se usará Fase 8 staged una sola vez como recuperación.\n"
-                    f"  error_code: {result.error_code.val}\n"
-                    f"  place_mode_eff: {self.obtener_place_geometry_mode_efectivo()}\n"
-                    f"  transfer_stage: {self.transfer_stage}"
-                )
-                self.phase8_direct_preplace_pending_fallback = False
-                self.phase8_direct_preplace_skip_once = True
-                if self.obtener_place_geometry_mode_efectivo() == 'shelf':
-                    self.iniciar_fase_8_shelf_staged_ompl()
-                else:
-                    self.iniciar_fase_8_staged_ompl()
-                return
-
             if (
                 self.current_phase == 12
                 and self.phase12_nonfatal_after_final_detach
@@ -5422,14 +5025,11 @@ class SingleArmFaceApproachGraspNode(Node):
         )
         for joint_name, vals in last_errors.items():
             actual, target, error_abs = vals
-            msg = (
+            level = self.get_logger().error if error_abs > tolerance else self.get_logger().info
+            level(
                 f"[HAND STATE BARRIER] {label}: {joint_name}: "
                 f"actual={actual:.4f}, target={target:.4f}, error_abs={error_abs:.4f}, tol={tolerance:.4f}"
             )
-            if error_abs > tolerance:
-                self.get_logger().error(msg)
-            else:
-                self.get_logger().info(msg)
         return False
 
     def enviar_comando_mano(self, positions: List[float], phase: int) -> None:
@@ -5541,7 +5141,7 @@ class SingleArmFaceApproachGraspNode(Node):
                     target_positions=target_positions,
                     label="fase 10 apertura antes de detach/register",
                     timeout_sec=float(self.release_settle_time),
-                    tolerance=max(0.02, float(self.hand_open_position_tolerance)),
+                    tolerance=float(self.hand_open_position_tolerance),
                     stable_samples_required=5,
                     poll_dt=0.10,
                     min_joint_state_wall_time=command_wall_time,
@@ -6135,24 +5735,7 @@ class SingleArmFaceApproachGraspNode(Node):
             self.get_logger().info("Fase 8: OMPL hacia waypoint superior de mesa central.")
             self.get_logger().info(f'Pose TCP sobre mesa (pre-place): {self.tcp_place_above.tolist()}')
             self.log_task_descriptor_actual()
-
-            pose_actual = self.obtener_pose_tcp_actual()
-            if pose_actual is None:
-                self.get_logger().error("[FASE 8 OMPL] Abortando: error de TF al obtener la pose actual del TCP.")
-                self.abortar_objeto_actual("error de TF al obtener la pose actual del TCP en Fase 8 OMPL")
-                return
-            _, tcp_actual_quat = self.pose_to_np(pose_actual)
-            self.preparar_orientacion_transporte_fase8(tcp_actual_quat, "mesa OMPL directo")
-
-            if self.intentar_phase8_directo_a_preplace_si_valido("mesa OMPL directo"):
-                return
-
-            self.planificar_a_pose(
-                self.tcp_place_above,
-                self.obtener_quat_fase8_transporte(),
-                phase=8,
-                label='traslado sobre mesa'
-            )
+            self.planificar_a_pose(self.tcp_place_above, self.tcp_quat_place, phase=8, label='traslado sobre mesa')
             return
 
         # Modo mesa - ompl_staged
@@ -6173,7 +5756,6 @@ class SingleArmFaceApproachGraspNode(Node):
                 return
 
             tcp_actual_pos, tcp_actual_quat = self.pose_to_np(pose_actual)
-            self.preparar_orientacion_transporte_fase8(tcp_actual_quat, "mesa cartesian_split/auto")
             
             # b) Build a multi-waypoint Cartesian path
             transit_z = max(tcp_actual_pos[2], self.tcp_place_above[2], self.phase8_transit_z)
@@ -6182,8 +5764,8 @@ class SingleArmFaceApproachGraspNode(Node):
             wp2_pos = np.array([self.tcp_place_above[0], self.tcp_place_above[1], transit_z], dtype=float)
             wp3_pos = self.tcp_place_above.copy()
             
-            # c) Usar orientación de transporte si yaw significativo; si no, conservar tcp_quat_place.
-            target_quat = self.obtener_quat_fase8_transporte()
+            # c) Keep target orientation as tcp_quat_place
+            target_quat = self.tcp_quat_place.copy()
             
             # Align sign of target quaternion
             q_actual_normalized = self.normalizar_quat(tcp_actual_quat)
@@ -6336,98 +5918,37 @@ class SingleArmFaceApproachGraspNode(Node):
                 return
 
 
-    def yaw_fase8_es_significativo(self) -> bool:
-        """True si el yaw relevante supera el umbral que justifica lógica especial."""
-        threshold = max(0.0, float(self.phase8_orientation_defer_threshold_deg))
-        yaws_deg = [
-            abs(math.degrees(float(getattr(self, 'initial_object_yaw_rad', 0.0)))),
-            abs(math.degrees(float(getattr(self, 'object_yaw_rad', 0.0)))),
-            abs(math.degrees(float(getattr(self, 'target_object_yaw_rad', 0.0)))),
-        ]
-        return max(yaws_deg) > threshold
-
-    def debe_diferir_orientacion_fase8_hasta_preplace(self) -> bool:
-        return (
-            bool(self.defer_phase8_orientation_until_preplace)
-            and self.object_type == 'cube'
-            and self.yaw_fase8_es_significativo()
-        )
-
     def debe_diferir_yaw_place_shelf_hasta_preinsert(self) -> bool:
-        """Compatibilidad con el patch anterior: shelf place usa el criterio general."""
         return (
-            self.debe_diferir_orientacion_fase8_hasta_preplace()
+            bool(self.defer_shelf_place_yaw_until_preinsert)
             and self.transfer_stage == 'table_to_target'
             and self.obtener_place_geometry_mode_efectivo() == 'shelf'
+            and self.object_type == 'cube'
         )
 
-    def preparar_orientacion_transporte_fase8(self, tcp_actual_quat: np.ndarray, label: str) -> None:
-        """Decide si Fase 8 debe transportar con orientación actual estable.
-
-        Para yaw pequeño, preserva el comportamiento base estable. Para yaw visible,
-        Fase 8 usa orientación actual y alinea al place final antes de Fase 9.
-        """
-        yaw_sources_deg = {
-            "initial": math.degrees(float(getattr(self, 'initial_object_yaw_rad', 0.0))),
-            "current": math.degrees(float(getattr(self, 'object_yaw_rad', 0.0))),
-            "target": math.degrees(float(getattr(self, 'target_object_yaw_rad', 0.0))),
-        }
-
-        if self.debe_diferir_orientacion_fase8_hasta_preplace():
-            self.phase8_deferred_orientation_pending = True
-            self.phase8_shelf_deferred_yaw_pending = (
-                self.transfer_stage == 'table_to_target'
-                and self.obtener_place_geometry_mode_efectivo() == 'shelf'
-            )
-            self.phase8_transport_quat = self.normalizar_quat(np.asarray(tcp_actual_quat, dtype=float))
-            self.phase8_shelf_transport_quat = self.phase8_transport_quat.copy()
-            ori_error_deg = self.distancia_angular_quat_deg(self.phase8_transport_quat, self.tcp_quat_place)
-            self.get_logger().warn(
-                "[PHASE 8 ORIENTATION DEFER] Activo: Fase 8 usará orientación de transporte; "
-                "la orientación final de place se aplicará justo antes de Fase 9.\n"
-                f"  label: {label}\n"
-                f"  threshold_deg: {self.phase8_orientation_defer_threshold_deg:.2f}\n"
-                f"  yaw_sources_deg: {yaw_sources_deg}\n"
-                f"  place_mode_eff: {self.obtener_place_geometry_mode_efectivo()}\n"
-                f"  transfer_stage: {self.transfer_stage}\n"
-                f"  delta_orientacion_transporte_vs_place: {ori_error_deg:.2f} deg"
-            )
-        else:
-            self.phase8_deferred_orientation_pending = False
-            self.phase8_shelf_deferred_yaw_pending = False
-            self.phase8_transport_quat = self.normalizar_quat(self.tcp_quat_place.copy())
-            self.phase8_shelf_transport_quat = self.phase8_transport_quat.copy()
-            self.get_logger().info(
-                "[PHASE 8 ORIENTATION DEFER] Inactivo: yaw dentro del umbral; "
-                "se preserva orientación final de place durante Fase 8.\n"
-                f"  label: {label}\n"
-                f"  threshold_deg: {self.phase8_orientation_defer_threshold_deg:.2f}\n"
-                f"  yaw_sources_deg: {yaw_sources_deg}"
-            )
-
-    def obtener_quat_fase8_transporte(self) -> np.ndarray:
+    def obtener_quat_fase8_shelf_transporte(self) -> np.ndarray:
         if (
-            getattr(self, 'phase8_deferred_orientation_pending', False)
-            and np.linalg.norm(self.phase8_transport_quat) > 1e-9
+            self.debe_diferir_yaw_place_shelf_hasta_preinsert()
+            and np.linalg.norm(self.phase8_shelf_transport_quat) > 1e-9
         ):
-            return self.normalizar_quat(self.phase8_transport_quat.copy())
+            return self.normalizar_quat(self.phase8_shelf_transport_quat.copy())
         return self.normalizar_quat(self.tcp_quat_place.copy())
 
-    def obtener_quat_fase8_shelf_transporte(self) -> np.ndarray:
-        return self.obtener_quat_fase8_transporte()
+    def ejecutar_alineacion_yaw_shelf_preinsert(self) -> None:
+        """
+        Aplica la orientación final de place recién en el preinsert del estante.
 
-    def ejecutar_alineacion_orientacion_preplace(self) -> None:
-        """Aplica orientación final de place en tcp_place_above justo antes de Fase 9."""
-        self.phase8_deferred_orientation_pending = False
+        Fase 8 llega al preinsert con orientación de transporte estable. Este paso
+        corto rota el TCP al yaw final antes de iniciar la inserción de Fase 9.
+        """
         self.phase8_shelf_deferred_yaw_pending = False
-        self.phase8_direct_preplace_pending_fallback = False
 
         pose_actual = self.obtener_pose_tcp_actual()
         if pose_actual is None:
             self.get_logger().error(
-                "[PHASE 8 ORIENTATION DEFER] Abortando: no se pudo obtener TCP actual antes de alinear orientación final."
+                "[SHELF PLACE YAW DEFER] Abortando: no se pudo obtener TCP actual antes de alinear yaw final."
             )
-            self.abortar_objeto_actual("TF TCP no disponible antes de alinear orientación final pre-place")
+            self.abortar_objeto_actual("TF TCP no disponible antes de alinear yaw final en preinsert")
             return
 
         tcp_actual_pos, tcp_actual_quat = self.pose_to_np(pose_actual)
@@ -6439,11 +5960,11 @@ class SingleArmFaceApproachGraspNode(Node):
         ori_error_deg = self.distancia_angular_quat_deg(tcp_actual_quat, target_quat)
 
         self.get_logger().warn(
-            "[PHASE 8 ORIENTATION DEFER] Fase 8 terminó con orientación de transporte. "
-            "Aplicando orientación final justo antes de Fase 9.\n"
+            "[SHELF PLACE YAW DEFER] Fase 8 terminó en preinsert con orientación de transporte. "
+            "Aplicando yaw final justo antes de Fase 9.\n"
             f"  tcp_actual_pos: {tcp_actual_pos.tolist()}\n"
             f"  tcp_place_above objetivo: {self.tcp_place_above.tolist()}\n"
-            f"  error_pos_preplace: {pos_error:.4f} m\n"
+            f"  error_pos_preinsert: {pos_error:.4f} m\n"
             f"  yaw_final_objeto: {math.degrees(self.target_object_yaw_rad):.2f} deg\n"
             f"  error_ori_actual_vs_final: {ori_error_deg:.2f} deg"
         )
@@ -6452,58 +5973,8 @@ class SingleArmFaceApproachGraspNode(Node):
             pos=self.tcp_place_above.copy(),
             quat=target_quat,
             phase=8,
-            label="alineación final de orientación en pre-place antes de Fase 9"
+            label="alineación final de yaw en preinsert shelf antes de Fase 9"
         )
-
-    def ejecutar_alineacion_yaw_shelf_preinsert(self) -> None:
-        self.ejecutar_alineacion_orientacion_preplace()
-
-    def intentar_phase8_directo_a_preplace_si_valido(self, label: str) -> bool:
-        """Intenta OMPL directo a pre-place/preinsert antes de segmentar Fase 8."""
-        if not bool(self.phase8_direct_preplace_first_enabled):
-            return False
-
-        if getattr(self, 'phase8_direct_preplace_skip_once', False):
-            self.phase8_direct_preplace_skip_once = False
-            self.get_logger().warn(
-                "[PHASE 8 DIRECT-FIRST] Omitido una vez porque el intento directo anterior falló; "
-                "se continuará con staged."
-            )
-            return False
-
-        if self.tcp_place_above is None or np.linalg.norm(self.tcp_place_above) < 1e-6:
-            return False
-
-        quat = self.obtener_quat_fase8_transporte()
-        res_final = self.get_ik(self.tcp_place_above, quat, avoid_collisions=True)
-        final_ik_ok = (res_final is not None and res_final.error_code.val == 1)
-        final_state_ok = False
-        if final_ik_ok:
-            final_state_ok = self.verificar_estado_ik(res_final, f"FASE 8 direct-first objetivo pre-place ({label})")
-
-        self.get_logger().warn(
-            "[PHASE 8 DIRECT-FIRST DIAG]\n"
-            f"  label: {label}\n"
-            f"  target_preplace: {self.tcp_place_above.tolist()}\n"
-            f"  use_transport_orientation: {self.phase8_deferred_orientation_pending}\n"
-            f"  IK collision-aware: {final_ik_ok} "
-            f"(code={res_final.error_code.val if res_final is not None else 'None'})\n"
-            f"  Estado collision-free: {final_state_ok}"
-        )
-
-        if not final_ik_ok or (self.abort_on_invalid_state_before_motion and not final_state_ok):
-            self.get_logger().warn("[PHASE 8 DIRECT-FIRST] Objetivo directo no válido; se usará staged.")
-            return False
-
-        self.phase8_staged_active = False
-        self.phase8_direct_preplace_pending_fallback = True
-        self.planificar_a_pose(
-            pos=self.tcp_place_above.copy(),
-            quat=quat,
-            phase=8,
-            label=f"phase8 direct-first a pre-place ({label})"
-        )
-        return True
 
     def iniciar_fase_8_shelf_staged_ompl(self) -> None:
         """
@@ -6523,10 +5994,23 @@ class SingleArmFaceApproachGraspNode(Node):
             return
 
         tcp_actual_pos, tcp_actual_quat = self.pose_to_np(pose_actual)
-        self.preparar_orientacion_transporte_fase8(tcp_actual_quat, "shelf Y-before-X staged")
 
-        if self.intentar_phase8_directo_a_preplace_si_valido("shelf preinsert"):
-            return
+        if self.debe_diferir_yaw_place_shelf_hasta_preinsert():
+            self.phase8_shelf_deferred_yaw_pending = True
+            self.phase8_shelf_transport_quat = self.normalizar_quat(tcp_actual_quat)
+            ori_error_deg = self.distancia_angular_quat_deg(
+                self.phase8_shelf_transport_quat,
+                self.tcp_quat_place
+            )
+            self.get_logger().warn(
+                "[SHELF PLACE YAW DEFER] Activo: Fase 8 usará orientación de transporte; "
+                "yaw final se aplicará en preinsert antes de Fase 9.\n"
+                f"  target_object_yaw_deg: {math.degrees(self.target_object_yaw_rad):.2f}\n"
+                f"  delta_orientacion_transporte_vs_place: {ori_error_deg:.2f} deg"
+            )
+        else:
+            self.phase8_shelf_deferred_yaw_pending = False
+            self.phase8_shelf_transport_quat = self.tcp_quat_place.copy()
 
         preinsert_final = self.tcp_place_above.copy()
 
@@ -6666,11 +6150,7 @@ class SingleArmFaceApproachGraspNode(Node):
             self.abortar_objeto_actual("error de TF al obtener la pose actual del TCP en Fase 8")
             return
 
-        tcp_actual_pos, tcp_actual_quat = self.pose_to_np(pose_actual)
-        self.preparar_orientacion_transporte_fase8(tcp_actual_quat, "mesa/staged OMPL")
-
-        if self.intentar_phase8_directo_a_preplace_si_valido("mesa/staged OMPL"):
-            return
+        tcp_actual_pos, _ = self.pose_to_np(pose_actual)
         
         place_mode_eff = self.obtener_place_geometry_mode_efectivo()
         if (self.phase8_shelf_transit_z_override > 0.0 and 
@@ -6859,6 +6339,7 @@ class SingleArmFaceApproachGraspNode(Node):
                 and self.transfer_stage == 'table_to_target'
                 and self.obtener_place_geometry_mode_efectivo() == 'shelf'
                 and self.cfg.side == self.second_arm_side
+                and self.debe_diferir_yaw_place_shelf_hasta_preinsert()
             ):
                 self.get_logger().warn(
                     "[FASE 8 SHELF DIRECT OMPL BYPASS ON IK FAIL] "
@@ -7081,28 +6562,13 @@ class SingleArmFaceApproachGraspNode(Node):
         self.get_logger().info('[DETACH SAFETY] Detach permitido después de confirmación de apertura y validación de pose.')
         self.registrar_objeto_en_destino()
 
-        # [PHASE 12 COLLISION GUARD]
-        # Después del detach el objeto ya está en WORLD. Para Fase 12 NO debemos
-        # permitir que la mano ignore al cubo, porque el retorno a home puede atravesarlo.
-        # Si el estado después de abrir mano es válido, lo correcto es planificar la
-        # retirada con colisiones mano-objeto activas.
-        if self.phase12_disable_release_acm_before_retreat:
-            self.aplicar_acm_contactos_release_mano_objeto(
-                allowed=False,
-                label="post_detach_pre_phase12_collision_guard"
-            )
-            self.get_logger().warn(
-                "[PHASE 12 COLLISION GUARD] ACM mano-objeto deshabilitado antes de Fase 12. "
-                "El brazo no podrá atravesar el cubo colocado."
-            )
-        else:
-            self.aplicar_acm_contactos_release_mano_objeto(
-                allowed=True,
-                label="post_detach_pre_phase12_legacy_allowed"
-            )
-            self.get_logger().warn(
-                "[PHASE 12 COLLISION GUARD] Modo legacy: se permite colisión mano-objeto durante Fase 12."
-            )
+        # [RELEASE ACM BEFORE PHASE 12]
+        # Tras el detach, el objeto pasa a WORLD. Contactos residuales dedo-objeto
+        # durante la retirada no deben invalidar el estado inicial de Fase 12.
+        self.aplicar_acm_contactos_release_mano_objeto(
+            allowed=True,
+            label="post_detach_pre_phase12"
+        )
 
         self.current_phase = 11
         if self.should_stop_after_phase(11, "después de desadjuntar y registrar objeto"):
@@ -7126,26 +6592,12 @@ class SingleArmFaceApproachGraspNode(Node):
             self.get_logger().info(f'distancia tcp_place a tcp_place_retreat: {dist:.4f} m')
             self.get_logger().info(f'use_split_place_retreat: {self.use_split_place_retreat}')
             self.get_logger().info(f'use_cartesian_local_motions: {self.use_cartesian_local_motions}')
-            self.get_logger().info(f'phase12_disable_release_acm_before_retreat: {self.phase12_disable_release_acm_before_retreat}')
-            self.get_logger().info(f'force_table_phase12_retreat_before_home: {self.force_table_phase12_retreat_before_home}')
             self.get_logger().info(f'place_geometry_mode: {self.place_geometry_mode}')
             self.get_logger().info(f'place_geometry_mode_efectivo: {place_mode_eff}')
             self.get_logger().info(f'origen_tcp_place_retreat: {"shelf" if place_mode_eff == "shelf" else "table"}')
             self.get_logger().info('------------------------------')
             
-        force_table_retreat = (
-            bool(self.force_table_phase12_retreat_before_home)
-            and place_mode_eff == 'table'
-            and self.transfer_stage == 'source_to_table'
-        )
-
-        if force_table_retreat:
-            self.get_logger().warn(
-                "[PHASE 12 TABLE SAFE RETREAT] Activo: antes de home se ejecutará retirada "
-                "cartesiana local desde el cubo colocado en mesa. No se permite bypass directo."
-            )
-
-        if place_mode_eff == 'shelf' or self.use_cartesian_local_motions or force_table_retreat:
+        if place_mode_eff == 'shelf' or self.use_cartesian_local_motions:
             if not self.retreat_done:
                 if place_mode_eff == 'shelf':
                     label_str = "retirada frontal desde estante destino"
@@ -7166,7 +6618,7 @@ class SingleArmFaceApproachGraspNode(Node):
                         phase=12,
                         label=label_str,
                         on_success="phase12_retreat_done",
-                        allow_release_contacts=not bool(self.phase12_disable_release_acm_before_retreat)
+                        allow_release_contacts=True
                     )
             else:
                 self.get_logger().info('Fase 12 - Parte 2: Moviendo a posición de reposo neutral...')
@@ -7277,16 +6729,6 @@ class SingleArmFaceApproachGraspNode(Node):
     def publish_object_state_callback(self) -> None:
         import json
         from std_msgs.msg import String
-
-        # [OBJECT STATE GATE]
-        # No publicar comandos visuales hacia MuJoCo antes de haber leído el
-        # primer TF válido del cubo. Evita que el ObjectSyncPlugin mueva el
-        # cubo a [0,0,0] o a una pose no inicializada durante el arranque.
-        if (
-            getattr(self, 'publish_object_state_only_after_initial_tf', True)
-            and not getattr(self, 'object_state_ready', False)
-        ):
-            return
         
         if self.object_is_attached:
             mode_str = 'ATTACHED_LEFT' if self.cfg.side == 'left' else 'ATTACHED_RIGHT'

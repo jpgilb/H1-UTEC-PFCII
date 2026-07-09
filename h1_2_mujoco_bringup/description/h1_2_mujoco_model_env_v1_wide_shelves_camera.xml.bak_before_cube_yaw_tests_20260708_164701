@@ -438,7 +438,7 @@
     </body>
 
     <!-- Visual-only active object for demo (cube of size 0.080, half-size 0.040) -->
-    <body name="visual_objeto_cubo" pos="0.54 0.33 0.095" quat="0.966 0 0 0.259">
+    <body name="visual_objeto_cubo" pos="0.54 0.33 0.095" quat="1 0 0 0">
       <geom name="visual_objeto_cubo_geom"
             type="box"
             size="0.04 0.04 0.04"

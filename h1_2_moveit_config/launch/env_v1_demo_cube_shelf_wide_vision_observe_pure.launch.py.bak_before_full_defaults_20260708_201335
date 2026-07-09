@@ -29,7 +29,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'object_frame',
-            default_value='objeto_cubo_vision',
+            default_value='objeto_cubo',
             description='Frame TF2 del objeto a manipular'
         ),
         DeclareLaunchArgument(
@@ -198,49 +198,13 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'use_aruco_table_target',
-            default_value='true',
+            default_value='false',
             description='Usar ArUco como destino de colocación intermedia en mesa'
         ),
         DeclareLaunchArgument(
             'use_aruco_table_height',
             default_value='false',
             description='Usar ArUco para ajustar dinámicamente la altura de colisión de la mesa'
-        ),
-
-        DeclareLaunchArgument(
-            'table_target_frame',
-            default_value='aruco_mesa',
-            description='Frame ArUco usado como referencia de destino de mesa'
-        ),
-        DeclareLaunchArgument(
-            'table_target_offset_x',
-            default_value='0.042',
-            description='Offset X desde ArUco al centro objetivo de mesa'
-        ),
-        DeclareLaunchArgument(
-            'table_target_offset_y',
-            default_value='0.118',
-            description='Offset Y desde ArUco al centro objetivo de mesa'
-        ),
-        DeclareLaunchArgument(
-            'table_target_offset_z',
-            default_value='-0.006',
-            description='Offset Z desde ArUco al centro objetivo de mesa'
-        ),
-        DeclareLaunchArgument(
-            'table_target_offset_mode',
-            default_value='base',
-            description='Modo del offset ArUco: base o marker_yaw'
-        ),
-        DeclareLaunchArgument(
-            'aruco_z_is_table_surface',
-            default_value='true',
-            description='Interpretar Z del ArUco como superficie de mesa'
-        ),
-        DeclareLaunchArgument(
-            'validate_aruco_table_target_ik',
-            default_value='false',
-            description='Validar IK del destino ArUco antes de ejecutar'
         ),
         DeclareLaunchArgument(
             'object_pose_reference',
@@ -302,57 +266,6 @@ def generate_launch_description():
             description='Confirmar apertura física de la mano antes de desasociar en MoveIt'
         ),
 
-        DeclareLaunchArgument(
-            'hand_open_position_tolerance',
-            default_value='0.02',
-            description='Tolerancia articular para confirmar apertura de mano'
-        ),
-        DeclareLaunchArgument(
-            'release_settle_time',
-            default_value='9',
-            description='Timeout/ventana de confirmación de apertura antes del detach'
-        ),
-        DeclareLaunchArgument(
-            'register_release_pose_from_attached_tcp',
-            default_value='true',
-            description='Registrar pose real del objeto desde TCP attached al soltar'
-        ),
-        DeclareLaunchArgument(
-            'use_registered_release_pose_for_next_stage',
-            default_value='true',
-            description='Usar pose real registrada sobre mesa para la segunda etapa'
-        ),
-        DeclareLaunchArgument(
-            'publish_object_state_only_after_initial_tf',
-            default_value='true',
-            description='No publicar estado visual hacia MuJoCo hasta tener TF inicial válido'
-        ),
-        DeclareLaunchArgument(
-            'clamp_table_release_z_to_support',
-            default_value='true',
-            description='Corregir solo Z si el objeto queda físicamente debajo del plano de apoyo de mesa'
-        ),
-        DeclareLaunchArgument(
-            'table_release_z_clamp_tolerance',
-            default_value='0.002',
-            description='Tolerancia vertical antes de aplicar clamp de apoyo en mesa'
-        ),
-        DeclareLaunchArgument(
-            'table_release_z_clearance_margin',
-            default_value='0.0',
-            description='Margen adicional de Z al aplicar clamp físico sobre mesa'
-        ),
-        DeclareLaunchArgument(
-            'phase12_disable_release_acm_before_retreat',
-            default_value='true',
-            description='Deshabilitar ACM mano-objeto antes de Fase 12 para evitar atravesar el cubo'
-        ),
-        DeclareLaunchArgument(
-            'force_table_phase12_retreat_before_home',
-            default_value='true',
-            description='Forzar retirada cartesiana de mesa antes de volver a home'
-        ),
-
         # Phase 8 parameters
         DeclareLaunchArgument(
             'phase8_motion_mode',
@@ -385,27 +298,6 @@ def generate_launch_description():
             description='Altura Z de tránsito sobre mesa en Fase 8 estante'
         ),
 
-        DeclareLaunchArgument(
-            'defer_shelf_place_yaw_until_preinsert',
-            default_value='true',
-            description='Diferir yaw final de place en shelf hasta preinsert'
-        ),
-        DeclareLaunchArgument(
-            'defer_phase8_orientation_until_preplace',
-            default_value='true',
-            description='Diferir orientación final de place hasta preplace cuando yaw significativo'
-        ),
-        DeclareLaunchArgument(
-            'phase8_orientation_defer_threshold_deg',
-            default_value='5.0',
-            description='Umbral de yaw para activar defer de orientación en Fase 8'
-        ),
-        DeclareLaunchArgument(
-            'phase8_direct_preplace_first_enabled',
-            default_value='true',
-            description='Intentar OMPL directo a preplace antes de staged en Fase 8'
-        ),
-
         # OMPL planner selection
         DeclareLaunchArgument(
             'ompl_pipeline_id',
@@ -414,84 +306,8 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'ompl_planner_id',
-            default_value='RRTConnectkConfigDefault',
+            default_value='',
             description='Planner OMPL explícito. Vacío = planner default de MoveIt'
-        ),
-
-        DeclareLaunchArgument(
-            'ompl_num_planning_attempts',
-            default_value='60',
-            description='Número de intentos de planificación OMPL'
-        ),
-        DeclareLaunchArgument(
-            'ompl_allowed_planning_time',
-            default_value='15.0',
-            description='Tiempo máximo de planificación OMPL [s]'
-        ),
-        DeclareLaunchArgument(
-            'ompl_max_velocity_scaling_factor',
-            default_value='0.10',
-            description='Escalado global de velocidad OMPL'
-        ),
-        DeclareLaunchArgument(
-            'ompl_max_acceleration_scaling_factor',
-            default_value='0.10',
-            description='Escalado global de aceleración OMPL'
-        ),
-        DeclareLaunchArgument(
-            'ompl_joint_goal_tolerance',
-            default_value='0.015',
-            description='Tolerancia articular de objetivo OMPL'
-        ),
-        DeclareLaunchArgument(
-            'near_object_motion_slowdown_enabled',
-            default_value='true',
-            description='Activar perfil dinámico conservador cerca del objeto'
-        ),
-        DeclareLaunchArgument(
-            'phase2_near_object_velocity_scaling',
-            default_value='0.055',
-            description='Velocity scaling local Fase 2'
-        ),
-        DeclareLaunchArgument(
-            'phase2_near_object_acceleration_scaling',
-            default_value='0.040',
-            description='Acceleration scaling local Fase 2'
-        ),
-        DeclareLaunchArgument(
-            'phase4_near_object_velocity_scaling',
-            default_value='0.035',
-            description='Velocity scaling local Fase 4'
-        ),
-        DeclareLaunchArgument(
-            'phase4_near_object_acceleration_scaling',
-            default_value='0.025',
-            description='Acceleration scaling local Fase 4'
-        ),
-        DeclareLaunchArgument(
-            'phase7_near_object_velocity_scaling',
-            default_value='0.055',
-            description='Velocity scaling local Fase 7'
-        ),
-        DeclareLaunchArgument(
-            'phase7_near_object_acceleration_scaling',
-            default_value='0.040',
-            description='Acceleration scaling local Fase 7'
-        ),
-        DeclareLaunchArgument(
-            'phase9_near_object_velocity_scaling',
-            default_value='0.045',
-            description='Velocity scaling local Fase 9'
-        ),
-        DeclareLaunchArgument(
-            'phase9_near_object_acceleration_scaling',
-            default_value='0.030',
-            description='Acceleration scaling local Fase 9'
-        ),
-        DeclareLaunchArgument(
-            'cartesian_near_object_time_scale',
-            default_value='2.0',
-            description='Multiplicador de tiempo para trayectorias cartesianas cerca del objeto'
         ),
 
         # Environment Scene parameters
@@ -655,43 +471,14 @@ def generate_launch_description():
             'abort_on_invalid_state_before_motion': LaunchConfiguration('abort_on_invalid_state_before_motion'),
             'validate_tcp_before_detach': LaunchConfiguration('validate_tcp_before_detach'),
             'confirm_hand_open_before_detach': LaunchConfiguration('confirm_hand_open_before_detach'),
-            'hand_open_position_tolerance': LaunchConfiguration('hand_open_position_tolerance'),
-            'release_settle_time': LaunchConfiguration('release_settle_time'),
-            'register_release_pose_from_attached_tcp': LaunchConfiguration('register_release_pose_from_attached_tcp'),
-            'use_registered_release_pose_for_next_stage': LaunchConfiguration('use_registered_release_pose_for_next_stage'),
-            'publish_object_state_only_after_initial_tf': LaunchConfiguration('publish_object_state_only_after_initial_tf'),
-            'clamp_table_release_z_to_support': LaunchConfiguration('clamp_table_release_z_to_support'),
-            'table_release_z_clamp_tolerance': LaunchConfiguration('table_release_z_clamp_tolerance'),
-            'table_release_z_clearance_margin': LaunchConfiguration('table_release_z_clearance_margin'),
-            'phase12_disable_release_acm_before_retreat': LaunchConfiguration('phase12_disable_release_acm_before_retreat'),
-            'force_table_phase12_retreat_before_home': LaunchConfiguration('force_table_phase12_retreat_before_home'),
             'phase8_motion_mode': LaunchConfiguration('phase8_motion_mode'),
             'phase8_transit_z': LaunchConfiguration('phase8_transit_z'),
             'phase8_min_cartesian_fraction': LaunchConfiguration('phase8_min_cartesian_fraction'),
             'phase8_staged_max_segment_distance': LaunchConfiguration('phase8_staged_max_segment_distance'),
             'debug_start_table_to_target': LaunchConfiguration('debug_start_table_to_target'),
             'phase8_shelf_transit_z_override': LaunchConfiguration('phase8_shelf_transit_z_override'),
-            'defer_shelf_place_yaw_until_preinsert': LaunchConfiguration('defer_shelf_place_yaw_until_preinsert'),
-            'defer_phase8_orientation_until_preplace': LaunchConfiguration('defer_phase8_orientation_until_preplace'),
-            'phase8_orientation_defer_threshold_deg': LaunchConfiguration('phase8_orientation_defer_threshold_deg'),
-            'phase8_direct_preplace_first_enabled': LaunchConfiguration('phase8_direct_preplace_first_enabled'),
             'ompl_pipeline_id': LaunchConfiguration('ompl_pipeline_id'),
             'ompl_planner_id': LaunchConfiguration('ompl_planner_id'),
-            'ompl_num_planning_attempts': LaunchConfiguration('ompl_num_planning_attempts'),
-            'ompl_allowed_planning_time': LaunchConfiguration('ompl_allowed_planning_time'),
-            'ompl_max_velocity_scaling_factor': LaunchConfiguration('ompl_max_velocity_scaling_factor'),
-            'ompl_max_acceleration_scaling_factor': LaunchConfiguration('ompl_max_acceleration_scaling_factor'),
-            'ompl_joint_goal_tolerance': LaunchConfiguration('ompl_joint_goal_tolerance'),
-            'near_object_motion_slowdown_enabled': LaunchConfiguration('near_object_motion_slowdown_enabled'),
-            'phase2_near_object_velocity_scaling': LaunchConfiguration('phase2_near_object_velocity_scaling'),
-            'phase2_near_object_acceleration_scaling': LaunchConfiguration('phase2_near_object_acceleration_scaling'),
-            'phase4_near_object_velocity_scaling': LaunchConfiguration('phase4_near_object_velocity_scaling'),
-            'phase4_near_object_acceleration_scaling': LaunchConfiguration('phase4_near_object_acceleration_scaling'),
-            'phase7_near_object_velocity_scaling': LaunchConfiguration('phase7_near_object_velocity_scaling'),
-            'phase7_near_object_acceleration_scaling': LaunchConfiguration('phase7_near_object_acceleration_scaling'),
-            'phase9_near_object_velocity_scaling': LaunchConfiguration('phase9_near_object_velocity_scaling'),
-            'phase9_near_object_acceleration_scaling': LaunchConfiguration('phase9_near_object_acceleration_scaling'),
-            'cartesian_near_object_time_scale': LaunchConfiguration('cartesian_near_object_time_scale'),
             'environment_scene_enabled': LaunchConfiguration('environment_scene_enabled'),
             'environment_profile': LaunchConfiguration('environment_profile'),
             'environment_add_table_to_planning_scene': LaunchConfiguration('environment_add_table_to_planning_scene'),

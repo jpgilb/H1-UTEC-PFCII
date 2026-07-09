@@ -297,72 +297,6 @@ class VisionNode(Node):
             [0.0, 0.0, 1.0],
         ], dtype=float)
 
-    def ray_from_pixel(self, u, v):
-        """Rayo 3D en frame de cámara a partir de pixel usando intrínsecos."""
-        if abs(self.fx) < 1e-9 or abs(self.fy) < 1e-9:
-            return None
-        return np.array([
-            (float(u) - self.cx) / self.fx,
-            (float(v) - self.cy) / self.fy,
-            1.0
-        ], dtype=float)
-
-    def intersect_ray_with_plane(self, u, v, plane_point, plane_normal):
-        """Intersección del rayo de cámara con el plano estimado de la cara visible."""
-        ray = self.ray_from_pixel(u, v)
-        if ray is None:
-            return None
-
-        plane_point = np.asarray(plane_point, dtype=float)
-        plane_normal = np.asarray(plane_normal, dtype=float)
-
-        denom = float(np.dot(plane_normal, ray))
-        if abs(denom) < 1e-9:
-            return None
-
-        t = float(np.dot(plane_normal, plane_point) / denom)
-        if not np.isfinite(t) or t <= 0.0:
-            return None
-
-        p = t * ray
-        if np.any(np.isnan(p)) or np.any(np.isinf(p)):
-            return None
-        return p
-
-    def estimate_x_axis_from_projected_corners(self, corners_2d, plane_point, plane_normal):
-        """
-        Estima el eje X del cubo usando las esquinas 2D proyectadas al plano 3D.
-
-        Mejora respecto al yaw 2D:
-        - TL/TR/BR/BL ya vienen ordenadas por sort_corners().
-        - Cada esquina 2D se intersecta con el plano 3D de la cara.
-        - El eje X se obtiene promediando el borde superior y el borde inferior.
-        """
-        try:
-            pts_3d = []
-            for pt in corners_2d:
-                p = self.intersect_ray_with_plane(pt[0], pt[1], plane_point, plane_normal)
-                if p is None:
-                    return None
-                pts_3d.append(p)
-
-            pts_3d = np.asarray(pts_3d, dtype=float)
-            p_tl, p_tr, p_br, p_bl = pts_3d
-
-            edge_top = p_tr - p_tl
-            edge_bottom = p_br - p_bl
-            x_raw = edge_top + edge_bottom
-
-            n = float(np.linalg.norm(x_raw))
-            if not np.isfinite(n) or n < 1e-9:
-                return None
-
-            return x_raw / n
-
-        except Exception as exc:
-            self.get_logger().warn(f"[CUBE ORIENTATION 3D] Falló estimación 3D de eje X: {exc}")
-            return None
-
     def rotation_matrix_to_quaternion(self, m):
         tr = np.trace(m)
         if tr > 0:
@@ -464,34 +398,9 @@ class VisionNode(Node):
                             
                             # 4. Construir Matriz y Pose
                             z_axis = self.stable_normal
-
-                            # [CUBE ORIENTATION 3D CORNER FIX]
-                            # En vez de usar solo el ángulo 2D TL->TR, proyectamos las esquinas
-                            # detectadas sobre el plano 3D de la cara visible. Esto corrige el
-                            # sesgo por perspectiva y mejora la lectura de yaw en MuJoCo.
-                            x_axis_raw_3d = self.estimate_x_axis_from_projected_corners(
-                                corners_2d=corners_2d,
-                                plane_point=mean_center,
-                                plane_normal=z_axis
-                            )
-
-                            if x_axis_raw_3d is None:
-                                x_axis_raw = visual_yaw_vec
-                                self.get_logger().warn(
-                                    "[CUBE ORIENTATION 3D CORNER FIX] Fallback a yaw 2D TL->TR."
-                                )
-                            else:
-                                x_axis_raw = x_axis_raw_3d
-
-                            x_axis = x_axis_raw - np.dot(x_axis_raw, z_axis) * z_axis
-                            x_norm = np.linalg.norm(x_axis)
-                            if x_norm < 1e-9:
-                                x_axis = visual_yaw_vec - np.dot(visual_yaw_vec, z_axis) * z_axis
-                                x_norm = np.linalg.norm(x_axis)
-
-                            x_axis /= max(x_norm, 1e-9)
+                            x_axis = visual_yaw_vec - np.dot(visual_yaw_vec, z_axis) * z_axis
+                            x_axis /= np.linalg.norm(x_axis)
                             y_axis = np.cross(z_axis, x_axis)
-                            y_axis /= max(np.linalg.norm(y_axis), 1e-9)
                             R_final = np.column_stack((x_axis, y_axis, z_axis))
 
                             # [CUBE ORIENTATION FIX]

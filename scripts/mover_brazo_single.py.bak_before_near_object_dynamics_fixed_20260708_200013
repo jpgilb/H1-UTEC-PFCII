@@ -393,20 +393,6 @@ class SingleArmFaceApproachGraspNode(Node):
         self.declare_parameter('ompl_pipeline_id', 'ompl')
         self.declare_parameter('ompl_planner_id', '')
 
-        # ======================================================================
-        # 15. PERFIL DINÁMICO LOCAL PARA INTERACCIÓN CERCANA CON OBJETO
-        # ======================================================================
-        self.declare_parameter('near_object_motion_slowdown_enabled', True)
-        self.declare_parameter('phase2_near_object_velocity_scaling', 0.055)
-        self.declare_parameter('phase2_near_object_acceleration_scaling', 0.040)
-        self.declare_parameter('phase4_near_object_velocity_scaling', 0.035)
-        self.declare_parameter('phase4_near_object_acceleration_scaling', 0.025)
-        self.declare_parameter('phase7_near_object_velocity_scaling', 0.055)
-        self.declare_parameter('phase7_near_object_acceleration_scaling', 0.040)
-        self.declare_parameter('phase9_near_object_velocity_scaling', 0.045)
-        self.declare_parameter('phase9_near_object_acceleration_scaling', 0.030)
-        self.declare_parameter('cartesian_near_object_time_scale', 2.0)
-
         # --------------------------
         # CARGAR VALORES DE PARÁMETROS
         # --------------------------
@@ -662,18 +648,6 @@ class SingleArmFaceApproachGraspNode(Node):
         self.ompl_pipeline_id = str(self.get_parameter('ompl_pipeline_id').value).strip()
         self.ompl_planner_id = str(self.get_parameter('ompl_planner_id').value).strip()
 
-        # PERFIL DINÁMICO LOCAL PARA INTERACCIÓN CERCANA CON OBJETO
-        self.near_object_motion_slowdown_enabled = bool(self.get_parameter('near_object_motion_slowdown_enabled').value)
-        self.phase2_near_object_velocity_scaling = float(self.get_parameter('phase2_near_object_velocity_scaling').value)
-        self.phase2_near_object_acceleration_scaling = float(self.get_parameter('phase2_near_object_acceleration_scaling').value)
-        self.phase4_near_object_velocity_scaling = float(self.get_parameter('phase4_near_object_velocity_scaling').value)
-        self.phase4_near_object_acceleration_scaling = float(self.get_parameter('phase4_near_object_acceleration_scaling').value)
-        self.phase7_near_object_velocity_scaling = float(self.get_parameter('phase7_near_object_velocity_scaling').value)
-        self.phase7_near_object_acceleration_scaling = float(self.get_parameter('phase7_near_object_acceleration_scaling').value)
-        self.phase9_near_object_velocity_scaling = float(self.get_parameter('phase9_near_object_velocity_scaling').value)
-        self.phase9_near_object_acceleration_scaling = float(self.get_parameter('phase9_near_object_acceleration_scaling').value)
-        self.cartesian_near_object_time_scale = float(self.get_parameter('cartesian_near_object_time_scale').value)
-
         # Validaciones OMPL
         if self.ompl_num_planning_attempts < 1:
             raise ValueError(f"ompl_num_planning_attempts ({self.ompl_num_planning_attempts}) debe ser >= 1")
@@ -688,26 +662,6 @@ class SingleArmFaceApproachGraspNode(Node):
 
         if self.ompl_pipeline_id == '':
             self.ompl_pipeline_id = 'ompl'
-
-        # Validaciones del perfil dinámico local.
-        # No modifica el perfil global OMPL; solo ajusta fases cercanas al objeto.
-        for _name, _value in [
-            ('phase2_near_object_velocity_scaling', self.phase2_near_object_velocity_scaling),
-            ('phase2_near_object_acceleration_scaling', self.phase2_near_object_acceleration_scaling),
-            ('phase4_near_object_velocity_scaling', self.phase4_near_object_velocity_scaling),
-            ('phase4_near_object_acceleration_scaling', self.phase4_near_object_acceleration_scaling),
-            ('phase7_near_object_velocity_scaling', self.phase7_near_object_velocity_scaling),
-            ('phase7_near_object_acceleration_scaling', self.phase7_near_object_acceleration_scaling),
-            ('phase9_near_object_velocity_scaling', self.phase9_near_object_velocity_scaling),
-            ('phase9_near_object_acceleration_scaling', self.phase9_near_object_acceleration_scaling),
-        ]:
-            if not (0.0 < float(_value) <= 1.0):
-                raise ValueError(f"{_name} ({_value}) debe estar en (0.0, 1.0]")
-
-        if self.cartesian_near_object_time_scale < 1.0:
-            raise ValueError(
-                f"cartesian_near_object_time_scale ({self.cartesian_near_object_time_scale}) debe ser >= 1.0"
-            )
 
         # Parsear y validar la cola
         self.object_queue = []
@@ -2320,14 +2274,8 @@ class SingleArmFaceApproachGraspNode(Node):
                 self.abortar_objeto_actual("Servidor de acción /execute_trajectory no disponible")
                 return False
                 
-            trajectory_to_execute = self.aplicar_time_scaling_cartesiano_near_object(
-                response.solution,
-                phase,
-                label
-            )
-
             goal_msg = ExecuteTrajectory.Goal()
-            goal_msg.trajectory = trajectory_to_execute
+            goal_msg.trajectory = response.solution
             
             future = self.execute_trajectory_client.send_goal_async(goal_msg)
             future.add_done_callback(self.cartesian_execute_goal_response_callback)
@@ -4678,117 +4626,12 @@ class SingleArmFaceApproachGraspNode(Node):
             )
         return target_names, target_positions
 
-    def obtener_perfil_dinamico_por_fase(self, phase: int) -> Tuple[float, float, str]:
-        """
-        Devuelve el perfil dinámico efectivo para MoveGroup/OMPL.
-
-        Local por fase: no cambia el perfil global del proyecto ni afecta fases
-        de tránsito lejos del objeto. Reduce energía de ejecución cerca del cubo.
-        """
-        base_vel = float(self.ompl_max_velocity_scaling_factor)
-        base_acc = float(self.ompl_max_acceleration_scaling_factor)
-
-        if not getattr(self, 'near_object_motion_slowdown_enabled', False):
-            return base_vel, base_acc, "GLOBAL_DEFAULT"
-
-        phase_profiles = {
-            2: (
-                float(self.phase2_near_object_velocity_scaling),
-                float(self.phase2_near_object_acceleration_scaling),
-                "NEAR_OBJECT_PHASE2_PREGRASP"
-            ),
-            4: (
-                float(self.phase4_near_object_velocity_scaling),
-                float(self.phase4_near_object_acceleration_scaling),
-                "NEAR_OBJECT_PHASE4_APPROACH"
-            ),
-            7: (
-                float(self.phase7_near_object_velocity_scaling),
-                float(self.phase7_near_object_acceleration_scaling),
-                "NEAR_OBJECT_PHASE7_RETREAT"
-            ),
-            9: (
-                float(self.phase9_near_object_velocity_scaling),
-                float(self.phase9_near_object_acceleration_scaling),
-                "NEAR_OBJECT_PHASE9_PLACE"
-            ),
-        }
-
-        if int(phase) not in phase_profiles:
-            return base_vel, base_acc, "GLOBAL_DEFAULT"
-
-        vel, acc, tag = phase_profiles[int(phase)]
-
-        # No permitir que el perfil local acelere por encima del perfil global.
-        vel_eff = min(max(float(vel), 1.0e-4), base_vel)
-        acc_eff = min(max(float(acc), 1.0e-4), base_acc)
-        return vel_eff, acc_eff, tag
-
-    def es_fase_cartesiana_near_object(self, phase: int) -> bool:
-        return (
-            bool(getattr(self, 'near_object_motion_slowdown_enabled', False))
-            and int(phase) in (4, 7, 9)
-            and float(getattr(self, 'cartesian_near_object_time_scale', 1.0)) > 1.0
-        )
-
-    def aplicar_time_scaling_cartesiano_near_object(self, trajectory, phase: int, label: str):
-        """
-        Escala los tiempos de una trayectoria cartesiana cercana al objeto.
-
-        No modifica geometría, waypoints, IK ni colisiones. Solo aumenta
-        time_from_start para disminuir velocidad/energía de ejecución.
-        """
-        if not self.es_fase_cartesiana_near_object(phase):
-            return trajectory
-
-        try:
-            points = trajectory.joint_trajectory.points
-        except Exception:
-            self.get_logger().warn(
-                f"[NEAR OBJECT DYNAMICS] No se pudo acceder a puntos de trayectoria cartesiana para {label}. "
-                "No se aplica time scaling."
-            )
-            return trajectory
-
-        if not points:
-            return trajectory
-
-        scale = float(self.cartesian_near_object_time_scale)
-        nonzero_time_points = 0
-
-        for pt in points:
-            dur = pt.time_from_start
-            total_ns = int(dur.sec) * 1000000000 + int(dur.nanosec)
-            if total_ns > 0:
-                nonzero_time_points += 1
-                scaled_ns = int(round(float(total_ns) * scale))
-                pt.time_from_start.sec = int(scaled_ns // 1000000000)
-                pt.time_from_start.nanosec = int(scaled_ns % 1000000000)
-
-        if nonzero_time_points == 0:
-            self.get_logger().warn(
-                f"[NEAR OBJECT DYNAMICS] Trayectoria cartesiana fase {phase} ({label}) no tiene timestamps no-cero. "
-                "No se pudo ralentizar por time_from_start."
-            )
-            return trajectory
-
-        self.get_logger().warn(
-            "[NEAR OBJECT DYNAMICS] Time scaling cartesiano aplicado.\n"
-            f"  phase: {phase}\n"
-            f"  label: {label}\n"
-            f"  scale: {scale:.3f}x\n"
-            f"  points_scaled: {nonzero_time_points}/{len(points)}"
-        )
-        return trajectory
-
     def enviar_meta_articular_brazo(self, names: List[str], positions: List[float], phase: int, label: str = "reposo neutral") -> None:
         self.current_phase = phase
         if not self.move_group_client.wait_for_server(timeout_sec=10.0):
             self.get_logger().error('Servidor MoveGroup no disponible.')
             self.abortar_objeto_actual("Servidor MoveGroup no disponible")
             return
-
-        vel_scale_eff, acc_scale_eff, dynamics_profile = self.obtener_perfil_dinamico_por_fase(phase)
 
         self.get_logger().info(
             f"[OMPL PLANNING] Planificación solicitada:\n"
@@ -4797,11 +4640,8 @@ class SingleArmFaceApproachGraspNode(Node):
             f"  Grupo activo: {self.cfg.arm_group}\n"
             f"  ompl_num_planning_attempts: {self.ompl_num_planning_attempts}\n"
             f"  ompl_allowed_planning_time: {self.ompl_allowed_planning_time:.4f}\n"
-            f"  ompl_max_velocity_scaling_factor_global: {self.ompl_max_velocity_scaling_factor:.4f}\n"
-            f"  ompl_max_acceleration_scaling_factor_global: {self.ompl_max_acceleration_scaling_factor:.4f}\n"
-            f"  effective_velocity_scaling_factor: {vel_scale_eff:.4f}\n"
-            f"  effective_acceleration_scaling_factor: {acc_scale_eff:.4f}\n"
-            f"  near_object_dynamics_profile: {dynamics_profile}\n"
+            f"  ompl_max_velocity_scaling_factor: {self.ompl_max_velocity_scaling_factor:.4f}\n"
+            f"  ompl_max_acceleration_scaling_factor: {self.ompl_max_acceleration_scaling_factor:.4f}\n"
             f"  ompl_joint_goal_tolerance: {self.ompl_joint_goal_tolerance:.4f}\n"
             f"  ompl_pipeline_id: {self.ompl_pipeline_id}\n"
             f"  ompl_planner_id: {self.ompl_planner_id if self.ompl_planner_id else 'MOVEIT_DEFAULT'}"
@@ -4815,8 +4655,8 @@ class SingleArmFaceApproachGraspNode(Node):
             req.planner_id = self.ompl_planner_id
         req.num_planning_attempts = self.ompl_num_planning_attempts
         req.allowed_planning_time = self.ompl_allowed_planning_time
-        req.max_velocity_scaling_factor = vel_scale_eff
-        req.max_acceleration_scaling_factor = acc_scale_eff
+        req.max_velocity_scaling_factor = self.ompl_max_velocity_scaling_factor
+        req.max_acceleration_scaling_factor = self.ompl_max_acceleration_scaling_factor
 
         constraints = Constraints()
         for name, pos in zip(names, positions):
