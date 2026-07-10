@@ -1,0 +1,111 @@
+#include <mutex>
+#include <string>
+#include <nlohmann/json.hpp>
+#include <std_msgs/msg/string.hpp>
+#include <mujoco_ros2_control_plugins/mujoco_ros2_control_plugins_base.hpp>
+#include <pluginlib/class_list_macros.hpp>
+
+namespace h1_2_mujoco_plugins
+{
+
+class ObjectSyncPlugin : public mujoco_ros2_control_plugins::MuJoCoROS2ControlPluginBase
+{
+public:
+  bool init(rclcpp::Node::SharedPtr node, const mjModel* model, mjData* data) override
+  {
+    node_ = node;
+    subscription_ = node_->create_subscription<std_msgs::msg::String>(
+      "/h1_demo/object_manipulation_state", 10,
+      std::bind(&ObjectSyncPlugin::topic_callback, this, std::placeholders::_1));
+    
+    RCLCPP_INFO(node_->get_logger(), "ObjectSyncPlugin initialized and subscribed to /h1_demo/object_manipulation_state");
+    return true;
+  }
+
+  void update(const mjModel* model, mjData* data) override
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!has_new_state_) {
+      return;
+    }
+
+    // Update physical cube if it has a freejoint
+    int joint_id = mj_name2id(model, mjOBJ_JOINT, "cube_freejoint");
+    if (joint_id != -1) {
+      int qpos_adr = model->jnt_qposadr[joint_id];
+      int qvel_adr = model->jnt_dofadr[joint_id];
+      if (qpos_adr != -1) {
+        data->qpos[qpos_adr + 0] = x_;
+        data->qpos[qpos_adr + 1] = y_;
+        data->qpos[qpos_adr + 2] = z_;
+        data->qpos[qpos_adr + 3] = qw_;
+        data->qpos[qpos_adr + 4] = qx_;
+        data->qpos[qpos_adr + 5] = qy_;
+        data->qpos[qpos_adr + 6] = qz_;
+
+        if (qvel_adr != -1) {
+          for (int k = 0; k < 6; ++k) {
+            data->qvel[qvel_adr + k] = 0.0;
+          }
+        }
+      }
+    }
+
+    // Update visual cube if it is a mocap body
+    int mocap_id = mj_name2id(model, mjOBJ_BODY, "visual_objeto_cubo");
+    if (mocap_id != -1) {
+      int mocap_idx = model->body_mocapid[mocap_id];
+      if (mocap_idx != -1) {
+        data->mocap_pos[3 * mocap_idx + 0] = x_;
+        data->mocap_pos[3 * mocap_idx + 1] = y_;
+        data->mocap_pos[3 * mocap_idx + 2] = z_;
+
+        data->mocap_quat[4 * mocap_idx + 0] = qw_;
+        data->mocap_quat[4 * mocap_idx + 1] = qx_;
+        data->mocap_quat[4 * mocap_idx + 2] = qy_;
+        data->mocap_quat[4 * mocap_idx + 3] = qz_;
+      }
+    }
+  }
+
+  void cleanup() override
+  {
+    subscription_.reset();
+  }
+
+private:
+  void topic_callback(const std_msgs::msg::String::SharedPtr msg)
+  {
+    try {
+      auto json_data = nlohmann::json::parse(msg->data);
+      
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (json_data.contains("position") && json_data.contains("orientation")) {
+        x_ = json_data["position"][0];
+        y_ = json_data["position"][1];
+        z_ = json_data["position"][2];
+
+        qw_ = json_data["orientation"][0];
+        qx_ = json_data["orientation"][1];
+        qy_ = json_data["orientation"][2];
+        qz_ = json_data["orientation"][3];
+        
+        has_new_state_ = true;
+      }
+    } catch (const std::exception& e) {
+      RCLCPP_ERROR(node_->get_logger(), "Error parsing ObjectSync msg: %s", e.what());
+    }
+  }
+
+  rclcpp::Node::SharedPtr node_;
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr subscription_;
+  
+  std::mutex mutex_;
+  double x_ = 0.54, y_ = 0.30, z_ = 0.08;
+  double qw_ = 1.0, qx_ = 0.0, qy_ = 0.0, qz_ = 0.0;
+  bool has_new_state_ = false;
+};
+
+}  // namespace h1_2_mujoco_plugins
+
+PLUGINLIB_EXPORT_CLASS(h1_2_mujoco_plugins::ObjectSyncPlugin, mujoco_ros2_control_plugins::MuJoCoROS2ControlPluginBase)
