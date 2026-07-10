@@ -270,7 +270,38 @@ def generate_launch_description():
             description='Fracción mínima para dar por válido un path cartesiano'
         ),
 
-        # Guarda Z heredada de Fase 4 shelf
+        #Patch de Gravedad
+
+        DeclareLaunchArgument(
+            'gravity_z_compensation_enabled',
+            default_value='false',
+            description='Habilitar compensación Z experimental para modo gravedad'
+        ),
+        DeclareLaunchArgument(
+            'gravity_z_bias_global',
+            default_value='0.0',
+            description='Bias Z global experimental para compensación por gravedad [m]'
+        ),
+        DeclareLaunchArgument(
+            'gravity_z_bias_shelf_pick',
+            default_value='0.0',
+            description='Bias Z adicional para pick en estante bajo gravedad [m]'
+        ),
+        DeclareLaunchArgument(
+            'gravity_z_bias_shelf_place',
+            default_value='0.0',
+            description='Bias Z adicional para place en estante bajo gravedad [m]'
+        ),
+        DeclareLaunchArgument(
+            'gravity_z_bias_table_approach',
+            default_value='0.0',
+            description='Bias Z adicional para aproximación a mesa bajo gravedad [m]'
+        ),
+        DeclareLaunchArgument(
+            'gravity_z_bias_transit',
+            default_value='0.0',
+            description='Bias Z adicional para tránsito bajo gravedad [m]'
+        ),
         DeclareLaunchArgument(
             'shelf_phase4_min_z_error_tolerance',
             default_value='0.006',
@@ -725,6 +756,12 @@ def generate_launch_description():
             'dz_offset': LaunchConfiguration('dz_offset'),
             'diagnostic_shelf_ik_grid_z_offsets': LaunchConfiguration('diagnostic_shelf_ik_grid_z_offsets'),
             'shelf_pregrasp_distance': LaunchConfiguration('shelf_pregrasp_distance'),
+            'gravity_z_compensation_enabled': LaunchConfiguration('gravity_z_compensation_enabled'),
+            'gravity_z_bias_global': LaunchConfiguration('gravity_z_bias_global'),
+            'gravity_z_bias_shelf_pick': LaunchConfiguration('gravity_z_bias_shelf_pick'),
+            'gravity_z_bias_shelf_place': LaunchConfiguration('gravity_z_bias_shelf_place'),
+            'gravity_z_bias_table_approach': LaunchConfiguration('gravity_z_bias_table_approach'),
+            'gravity_z_bias_transit': LaunchConfiguration('gravity_z_bias_transit'),
             'shelf_phase4_min_z_error_tolerance': LaunchConfiguration('shelf_phase4_min_z_error_tolerance'),
             'env_shelf_center_x': LaunchConfiguration('env_shelf_center_x'),
             'env_left_shelf_center_y': LaunchConfiguration('env_left_shelf_center_y'),

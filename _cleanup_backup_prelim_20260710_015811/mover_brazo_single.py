@@ -24,6 +24,7 @@ Flujo:
 7) retirada vertical
 """
 
+import posixpath
 import math
 import time
 from dataclasses import dataclass
@@ -35,7 +36,7 @@ import tf2_ros
 from tf2_ros import TransformException
 from builtin_interfaces.msg import Duration
 from control_msgs.action import FollowJointTrajectory
-from geometry_msgs.msg import Pose
+from geometry_msgs.msg import Pose, PoseStamped
 from moveit_msgs.action import MoveGroup, ExecuteTrajectory
 from moveit_msgs.msg import (
     AttachedCollisionObject,
@@ -293,8 +294,14 @@ class SingleArmFaceApproachGraspNode(Node):
         self.declare_parameter('shelf_phase2_staged_enabled', True)
         self.declare_parameter('shelf_stage_distance_from_attach', 0.12)
         self.declare_parameter('diagnostic_contacts_on_ik_failure', False)
-        # Guarda Z heredada para Fase 4 shelf si se reactiva phase4_start_sync_enabled.
-        # No pertenece al bias experimental eliminado; se conserva como protección de seguridad.
+        
+        # Parámetros experimentales para compensación de gravedad en Z
+        self.declare_parameter('gravity_z_compensation_enabled', False)
+        self.declare_parameter('gravity_z_bias_global', 0.0)
+        self.declare_parameter('gravity_z_bias_shelf_pick', 0.0)
+        self.declare_parameter('gravity_z_bias_shelf_place', 0.0)
+        self.declare_parameter('gravity_z_bias_table_approach', 0.0)
+        self.declare_parameter('gravity_z_bias_transit', 0.0)
         self.declare_parameter('shelf_phase4_min_z_error_tolerance', 0.004)
         self.declare_parameter('diagnostic_shelf_ik_grid_enabled', False)
         self.declare_parameter('diagnostic_shelf_ik_grid_abort_after', True)
@@ -580,7 +587,14 @@ class SingleArmFaceApproachGraspNode(Node):
         self.shelf_phase2_staged_enabled = bool(self.get_parameter('shelf_phase2_staged_enabled').value)
         self.shelf_stage_distance_from_attach = float(self.get_parameter('shelf_stage_distance_from_attach').value)
         self.diagnostic_contacts_on_ik_failure = bool(self.get_parameter('diagnostic_contacts_on_ik_failure').value)
-        # Guarda Z heredada para Fase 4 shelf si se reactiva phase4_start_sync_enabled.
+
+        # Lectura de parámetros experimentales de gravedad Z
+        self.gravity_z_compensation_enabled = bool(self.get_parameter('gravity_z_compensation_enabled').value)
+        self.gravity_z_bias_global = float(self.get_parameter('gravity_z_bias_global').value)
+        self.gravity_z_bias_shelf_pick = float(self.get_parameter('gravity_z_bias_shelf_pick').value)
+        self.gravity_z_bias_shelf_place = float(self.get_parameter('gravity_z_bias_shelf_place').value)
+        self.gravity_z_bias_table_approach = float(self.get_parameter('gravity_z_bias_table_approach').value)
+        self.gravity_z_bias_transit = float(self.get_parameter('gravity_z_bias_transit').value)
         self.shelf_phase4_min_z_error_tolerance = float(self.get_parameter('shelf_phase4_min_z_error_tolerance').value)
         self.diagnostic_shelf_ik_grid_enabled = bool(self.get_parameter('diagnostic_shelf_ik_grid_enabled').value)
         self.diagnostic_shelf_ik_grid_abort_after = bool(self.get_parameter('diagnostic_shelf_ik_grid_abort_after').value)
@@ -3598,6 +3612,20 @@ class SingleArmFaceApproachGraspNode(Node):
         )
         return False
 
+    def obtener_gravity_z_bias(self, context: str) -> float:
+        if not self.gravity_z_compensation_enabled:
+            return 0.0
+        
+        if context == "shelf_pick":
+            return self.gravity_z_bias_global + self.gravity_z_bias_shelf_pick
+        elif context == "shelf_place":
+            return self.gravity_z_bias_global + self.gravity_z_bias_shelf_place
+        elif context == "table_approach":
+            return self.gravity_z_bias_global + self.gravity_z_bias_table_approach
+        elif context == "transit":
+            return self.gravity_z_bias_global + self.gravity_z_bias_transit
+        else:
+            return self.gravity_z_bias_global
 
     def limpiar_escena(self) -> None:
         self.get_logger().info('Limpiando escena de planificación...')
@@ -4165,8 +4193,8 @@ class SingleArmFaceApproachGraspNode(Node):
         self.object_is_attached = True
 
         self.get_logger().info(
-            'Objeto principal e interno adjuntados al TCP con touch_links de mano configurados. '
-            'Durante el transporte se permiten contactos mano-objeto del grasp virtual.'
+            'Objeto principal e interno adjuntados al TCP. '
+            'El objeto interno carece de touch_links en los dedos para simular sensor propioceptivo en RViz.'
         )
 
     def calcular_pose_objeto_attached_actual(self):
@@ -4463,14 +4491,32 @@ class SingleArmFaceApproachGraspNode(Node):
         # Stage outside pose for collision-free entry
         self.tcp_stage_outside = self.tcp_virtual_attach + shelf_out_dir * self.shelf_stage_distance_from_attach
 
-        # Copias geométricas base usadas por guardas de seguridad/diagnóstico.
-        # Se elimina el antiguo bias Z experimental porque alteraba targets geométricos
-        # del pipeline canónico y no fue validado.
+        # Guardar copias no sesgadas antes de aplicar bias Z por gravedad
         self.tcp_contact_unbiased = np.copy(self.tcp_contact)
         self.tcp_virtual_attach_unbiased = np.copy(self.tcp_virtual_attach)
         self.tcp_pregrasp_unbiased = np.copy(self.tcp_pregrasp)
         self.tcp_ready_unbiased = np.copy(self.tcp_ready)
         self.tcp_stage_outside_unbiased = np.copy(self.tcp_stage_outside)
+
+        # Aplicar bias Z por gravedad si está habilitado
+        if self.transfer_stage == "source_to_table":
+            context = "shelf_pick"
+        elif self.transfer_stage == "table_to_target":
+            context = "shelf_place"
+        else:
+            context = "unknown"
+            
+        bias_z = self.obtener_gravity_z_bias(context)
+        if bias_z != 0.0:
+            self.tcp_contact[2] += bias_z
+            self.tcp_virtual_attach[2] += bias_z
+            self.tcp_pregrasp[2] += bias_z
+            self.tcp_ready[2] += bias_z
+            self.tcp_stage_outside[2] += bias_z
+            self.get_logger().info(
+                f"[GRAVITY Z BIAS] context={context}, bias={bias_z:.4f}, "
+                f"tcp_ready_z={self.tcp_ready[2]:.4f}, tcp_contact_z={self.tcp_contact[2]:.4f}"
+            )
 
         # Logs diagnostic/audit
         dist_virtual = float(np.linalg.norm(self.tcp_virtual_attach - self.object_position))

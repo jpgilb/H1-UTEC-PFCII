@@ -24,6 +24,7 @@ Flujo:
 7) retirada vertical
 """
 
+import posixpath
 import math
 import time
 from dataclasses import dataclass
@@ -35,7 +36,7 @@ import tf2_ros
 from tf2_ros import TransformException
 from builtin_interfaces.msg import Duration
 from control_msgs.action import FollowJointTrajectory
-from geometry_msgs.msg import Pose
+from geometry_msgs.msg import Pose, PoseStamped
 from moveit_msgs.action import MoveGroup, ExecuteTrajectory
 from moveit_msgs.msg import (
     AttachedCollisionObject,
@@ -222,19 +223,11 @@ class SingleArmFaceApproachGraspNode(Node):
         self.declare_parameter('min_cartesian_fraction', 0.9)
         self.declare_parameter('cartesian_max_step', 0.005)
         self.declare_parameter('cartesian_jump_threshold', 1.5)
-        # La barrera de entrada histórica de Fase 4 queda desactivada por defecto.
-        # La robustez se centraliza ahora como aceptación POST-fase del TCP.
-        self.declare_parameter('phase4_start_sync_enabled', False)
+        self.declare_parameter('phase4_start_sync_enabled', True)
         self.declare_parameter('phase4_tcp_position_tolerance', 0.015)
         self.declare_parameter('phase4_tcp_orientation_tolerance_deg', 5.0)
         self.declare_parameter('phase4_start_sync_timeout', 1.0)
         self.declare_parameter('phase4_start_sync_poll_dt', 0.05)
-        self.declare_parameter('tcp_phase_acceptance_enabled', True)
-        self.declare_parameter('tcp_phase_position_tolerance', 0.015)
-        self.declare_parameter('tcp_phase_position_tolerance_shelf', 0.020)
-        self.declare_parameter('tcp_phase_acceptance_timeout', 7.0)
-        self.declare_parameter('tcp_phase_acceptance_poll_dt', 0.10)
-        self.declare_parameter('tcp_phase_acceptance_stable_samples', 3)
         self.declare_parameter('cartesian_joint_jump_guard_enabled', True)
         self.declare_parameter('cartesian_max_step_joint_delta', 0.35)
         self.declare_parameter('cartesian_max_total_joint_delta', 2.0)
@@ -293,8 +286,14 @@ class SingleArmFaceApproachGraspNode(Node):
         self.declare_parameter('shelf_phase2_staged_enabled', True)
         self.declare_parameter('shelf_stage_distance_from_attach', 0.12)
         self.declare_parameter('diagnostic_contacts_on_ik_failure', False)
-        # Guarda Z heredada para Fase 4 shelf si se reactiva phase4_start_sync_enabled.
-        # No pertenece al bias experimental eliminado; se conserva como protección de seguridad.
+        
+        # Parámetros experimentales para compensación de gravedad en Z
+        self.declare_parameter('gravity_z_compensation_enabled', False)
+        self.declare_parameter('gravity_z_bias_global', 0.0)
+        self.declare_parameter('gravity_z_bias_shelf_pick', 0.0)
+        self.declare_parameter('gravity_z_bias_shelf_place', 0.0)
+        self.declare_parameter('gravity_z_bias_table_approach', 0.0)
+        self.declare_parameter('gravity_z_bias_transit', 0.0)
         self.declare_parameter('shelf_phase4_min_z_error_tolerance', 0.004)
         self.declare_parameter('diagnostic_shelf_ik_grid_enabled', False)
         self.declare_parameter('diagnostic_shelf_ik_grid_abort_after', True)
@@ -504,12 +503,6 @@ class SingleArmFaceApproachGraspNode(Node):
         self.phase4_tcp_orientation_tolerance_deg = float(self.get_parameter('phase4_tcp_orientation_tolerance_deg').value)
         self.phase4_start_sync_timeout = float(self.get_parameter('phase4_start_sync_timeout').value)
         self.phase4_start_sync_poll_dt = float(self.get_parameter('phase4_start_sync_poll_dt').value)
-        self.tcp_phase_acceptance_enabled = bool(self.get_parameter('tcp_phase_acceptance_enabled').value)
-        self.tcp_phase_position_tolerance = float(self.get_parameter('tcp_phase_position_tolerance').value)
-        self.tcp_phase_position_tolerance_shelf = float(self.get_parameter('tcp_phase_position_tolerance_shelf').value)
-        self.tcp_phase_acceptance_timeout = float(self.get_parameter('tcp_phase_acceptance_timeout').value)
-        self.tcp_phase_acceptance_poll_dt = float(self.get_parameter('tcp_phase_acceptance_poll_dt').value)
-        self.tcp_phase_acceptance_stable_samples = int(self.get_parameter('tcp_phase_acceptance_stable_samples').value)
         self.cartesian_joint_jump_guard_enabled = bool(self.get_parameter('cartesian_joint_jump_guard_enabled').value)
         self.cartesian_max_step_joint_delta = float(self.get_parameter('cartesian_max_step_joint_delta').value)
         self.cartesian_max_total_joint_delta = float(self.get_parameter('cartesian_max_total_joint_delta').value)
@@ -580,7 +573,14 @@ class SingleArmFaceApproachGraspNode(Node):
         self.shelf_phase2_staged_enabled = bool(self.get_parameter('shelf_phase2_staged_enabled').value)
         self.shelf_stage_distance_from_attach = float(self.get_parameter('shelf_stage_distance_from_attach').value)
         self.diagnostic_contacts_on_ik_failure = bool(self.get_parameter('diagnostic_contacts_on_ik_failure').value)
-        # Guarda Z heredada para Fase 4 shelf si se reactiva phase4_start_sync_enabled.
+
+        # Lectura de parámetros experimentales de gravedad Z
+        self.gravity_z_compensation_enabled = bool(self.get_parameter('gravity_z_compensation_enabled').value)
+        self.gravity_z_bias_global = float(self.get_parameter('gravity_z_bias_global').value)
+        self.gravity_z_bias_shelf_pick = float(self.get_parameter('gravity_z_bias_shelf_pick').value)
+        self.gravity_z_bias_shelf_place = float(self.get_parameter('gravity_z_bias_shelf_place').value)
+        self.gravity_z_bias_table_approach = float(self.get_parameter('gravity_z_bias_table_approach').value)
+        self.gravity_z_bias_transit = float(self.get_parameter('gravity_z_bias_transit').value)
         self.shelf_phase4_min_z_error_tolerance = float(self.get_parameter('shelf_phase4_min_z_error_tolerance').value)
         self.diagnostic_shelf_ik_grid_enabled = bool(self.get_parameter('diagnostic_shelf_ik_grid_enabled').value)
         self.diagnostic_shelf_ik_grid_abort_after = bool(self.get_parameter('diagnostic_shelf_ik_grid_abort_after').value)
@@ -925,13 +925,6 @@ class SingleArmFaceApproachGraspNode(Node):
         self.pre_close_effort: Optional[Dict[str, float]] = None
         self.last_tick_effort: Optional[Dict[str, float]] = None
         self.effort_available = False
-
-        # Barrera POST-fase para movimientos de TCP.
-        self.pending_tcp_acceptance_target_pos: Optional[np.ndarray] = None
-        self.pending_tcp_acceptance_target_quat: Optional[np.ndarray] = None
-        self.pending_tcp_acceptance_phase: Optional[int] = None
-        self.pending_tcp_acceptance_label: str = ""
-        self.pending_tcp_acceptance_source: str = ""
 
         # --------------------------
         # ROS 2
@@ -2383,13 +2376,6 @@ class SingleArmFaceApproachGraspNode(Node):
             self.current_phase = phase
             self.cartesian_motion_context = on_success
             self.cartesian_motion_label = label
-            self.registrar_objetivo_tcp_post_fase(
-                phase=phase,
-                target_pos=target_pos,
-                target_quat=target_quat_aligned,
-                label=label,
-                source='cartesian'
-            )
             
             # Ejecutar trayectoria con ExecuteTrajectory action
             if not self.execute_trajectory_client.wait_for_server(timeout_sec=5.0):
@@ -2828,9 +2814,6 @@ class SingleArmFaceApproachGraspNode(Node):
         result = future.result().result
         if result.error_code.val == 1:  # SUCCESS = 1
             self.get_logger().info(f'Ejecución cartesiana de {self.cartesian_motion_label} (Fase {self.current_phase}) completada con éxito.')
-            if not self.esperar_tcp_en_objetivo_post_fase(self.current_phase, context='cartesian_execute_result_callback'):
-                self.abortar_objeto_actual(f"Fase {self.current_phase}: TCP no alcanzó objetivo post-cartesiano dentro de tolerancia")
-                return
             
             if self.cartesian_motion_context == "phase4_done":
                 self.schedule_next_phase_after_settle()
@@ -3295,212 +3278,6 @@ class SingleArmFaceApproachGraspNode(Node):
         ori = np.array([pose.orientation.x, pose.orientation.y, pose.orientation.z, pose.orientation.w], dtype=float)
         return pos, ori
 
-    def limpiar_objetivo_tcp_post_fase(self) -> None:
-        self.pending_tcp_acceptance_target_pos = None
-        self.pending_tcp_acceptance_target_quat = None
-        self.pending_tcp_acceptance_phase = None
-        self.pending_tcp_acceptance_label = ""
-        self.pending_tcp_acceptance_source = ""
-
-    def registrar_objetivo_tcp_post_fase(
-        self,
-        phase: int,
-        target_pos: np.ndarray,
-        target_quat: Optional[np.ndarray],
-        label: str,
-        source: str,
-    ) -> None:
-        if not self.tcp_phase_acceptance_enabled:
-            self.limpiar_objetivo_tcp_post_fase()
-            return
-
-        if target_pos is None or np.isnan(np.asarray(target_pos, dtype=float)).any():
-            self.get_logger().warn(
-                f"[TCP POST-GATE] No se registra objetivo TCP para fase {phase} ({label}) porque target_pos es inválido."
-            )
-            self.limpiar_objetivo_tcp_post_fase()
-            return
-
-        self.pending_tcp_acceptance_target_pos = np.asarray(target_pos, dtype=float).copy()
-        self.pending_tcp_acceptance_target_quat = (
-            np.asarray(target_quat, dtype=float).copy() if target_quat is not None else None
-        )
-        self.pending_tcp_acceptance_phase = int(phase)
-        self.pending_tcp_acceptance_label = str(label)
-        self.pending_tcp_acceptance_source = str(source)
-
-        self.get_logger().warn(
-            "[TCP POST-GATE] Objetivo registrado para aceptación posterior de fase.\n"
-            f"  phase: {phase}\n"
-            f"  source: {source}\n"
-            f"  label: {label}\n"
-            f"  target_pos: {self.pending_tcp_acceptance_target_pos.tolist()}"
-        )
-
-    def obtener_tolerancia_tcp_post_fase(self, phase: int) -> float:
-        use_shelf_tol = False
-        if phase in (2, 4, 7) and self.manipulation_geometry_mode == 'shelf':
-            use_shelf_tol = True
-        if phase in (8, 9, 12) and self.obtener_place_geometry_mode_efectivo() == 'shelf':
-            use_shelf_tol = True
-
-        if use_shelf_tol:
-            return max(0.001, float(self.tcp_phase_position_tolerance_shelf))
-        return max(0.001, float(self.tcp_phase_position_tolerance))
-
-    def es_subpaso_interno_tcp_post_gate(self, phase: int, context: str = "") -> bool:
-        """True si el SUCCESS pertenece a un submovimiento interno, no al cierre real de una fase.
-
-        La barrera TCP POST-GATE debe validar la aceptación de la fase total.
-        No debe bloquear subpasos internos de Fase 8 staged, micro-lifts o pasos auxiliares.
-        """
-        try:
-            phase_i = int(phase)
-        except Exception:
-            phase_i = phase
-
-        # Fase 8 staged OMPL:
-        # mientras phase8_staged_active=True, solo el último subpaso representa la meta total de Fase 8.
-        if phase_i == 8 and getattr(self, 'phase8_staged_active', False):
-            waypoints = getattr(self, 'phase8_staged_waypoints', []) or []
-            idx = int(getattr(self, 'phase8_staged_index', 0))
-            total = len(waypoints)
-
-            if total > 0 and idx < (total - 1):
-                return True
-
-        # Fase 2 staged shelf:
-        # el primer movimiento llega al corredor externo; la aceptación de Fase 2 completa
-        # corresponde al segundo movimiento hacia tcp_pregrasp.
-        if (
-            phase_i == 2
-            and self.manipulation_geometry_mode == 'shelf'
-            and self.shelf_phase2_staged_enabled
-            and not getattr(self, 'shelf_phase2_reached_outside', False)
-        ):
-            return True
-
-        # Fase 7 shelf micro-lift:
-        # phase7_lift_done es una acción interna previa a la retirada real.
-        if (
-            phase_i == 7
-            and hasattr(self, 'cartesian_motion_context')
-            and self.cartesian_motion_context == 'phase7_lift_done'
-        ):
-            return True
-
-        # Fase 9 shelf:
-        # phase9_shelf_insert_lifted_done es predescenso; la fase termina después del lowering.
-        if (
-            phase_i == 9
-            and hasattr(self, 'cartesian_motion_context')
-            and self.cartesian_motion_context == 'phase9_shelf_insert_lifted_done'
-        ):
-            return True
-
-        return False
-
-    def esperar_tcp_en_objetivo_post_fase(self, phase: int, context: str = "") -> bool:
-        if not self.tcp_phase_acceptance_enabled:
-            self.limpiar_objetivo_tcp_post_fase()
-            return True
-
-        if self.es_subpaso_interno_tcp_post_gate(phase, context=context):
-            self.get_logger().warn(
-                "[TCP POST-GATE] Omitido porque el SUCCESS pertenece a un subpaso interno, "
-                "no al cierre de la fase total. Se limpia cualquier target obsoleto.\n"
-                f"  phase: {phase}\n"
-                f"  context: {context}\n"
-                f"  pending_label: {self.pending_tcp_acceptance_label}\n"
-                f"  phase8_staged_active: {getattr(self, 'phase8_staged_active', False)}\n"
-                f"  phase8_staged_index: {getattr(self, 'phase8_staged_index', 'N/A')}\n"
-                f"  phase8_total_waypoints: {len(getattr(self, 'phase8_staged_waypoints', []) or [])}"
-            )
-            self.limpiar_objetivo_tcp_post_fase()
-            return True
-
-        if self.pending_tcp_acceptance_target_pos is None:
-            return True
-
-        if self.pending_tcp_acceptance_phase != int(phase):
-            self.get_logger().warn(
-                "[TCP POST-GATE] Objetivo pendiente no corresponde a la fase actual. "
-                "Se omite para evitar bloquear por estado obsoleto.\n"
-                f"  pending_phase: {self.pending_tcp_acceptance_phase}\n"
-                f"  current_phase: {phase}\n"
-                f"  pending_label: {self.pending_tcp_acceptance_label}\n"
-                f"  context: {context}"
-            )
-            self.limpiar_objetivo_tcp_post_fase()
-            return True
-
-        target = self.pending_tcp_acceptance_target_pos.copy()
-        label = self.pending_tcp_acceptance_label
-        source = self.pending_tcp_acceptance_source
-        tol = self.obtener_tolerancia_tcp_post_fase(phase)
-        timeout_sec = max(0.0, float(self.tcp_phase_acceptance_timeout))
-        poll_dt = max(0.02, float(self.tcp_phase_acceptance_poll_dt))
-        stable_required = max(1, int(self.tcp_phase_acceptance_stable_samples))
-        start_time = time.time()
-        stable_count = 0
-        last_tcp_pos = None
-        last_error = float('inf')
-
-        self.get_logger().warn(
-            "[TCP POST-GATE] Esperando aceptación geométrica posterior a SUCCESS.\n"
-            f"  phase: {phase}\n"
-            f"  source: {source}\n"
-            f"  label: {label}\n"
-            f"  context: {context}\n"
-            f"  target: {target.tolist()}\n"
-            f"  tolerance: {tol:.4f} m\n"
-            f"  timeout: {timeout_sec:.2f} s\n"
-            f"  stable_samples: {stable_required}"
-        )
-
-        while (time.time() - start_time) <= timeout_sec:
-            pose_actual = self.obtener_pose_tcp_actual()
-            if pose_actual is not None:
-                tcp_pos, _ = self.pose_to_np(pose_actual)
-                last_tcp_pos = tcp_pos
-                last_error = float(np.linalg.norm(tcp_pos - target))
-
-                if last_error <= tol:
-                    stable_count += 1
-                    if stable_count >= stable_required:
-                        elapsed = time.time() - start_time
-                        self.get_logger().info(
-                            "[TCP POST-GATE] Fase aceptada por TCP dentro de tolerancia.\n"
-                            f"  phase: {phase}\n"
-                            f"  label: {label}\n"
-                            f"  elapsed: {elapsed:.2f} s\n"
-                            f"  tcp_actual: {tcp_pos.tolist()}\n"
-                            f"  target: {target.tolist()}\n"
-                            f"  error: {last_error:.5f} m\n"
-                            f"  tolerance: {tol:.5f} m"
-                        )
-                        self.limpiar_objetivo_tcp_post_fase()
-                        return True
-                else:
-                    stable_count = 0
-
-            time.sleep(poll_dt)
-
-        self.get_logger().error(
-            "[TCP POST-GATE] Timeout: la fase terminó en SUCCESS, pero el TCP no llegó al objetivo dentro de tolerancia.\n"
-            f"  phase: {phase}\n"
-            f"  source: {source}\n"
-            f"  label: {label}\n"
-            f"  context: {context}\n"
-            f"  target: {target.tolist()}\n"
-            f"  last_tcp: {last_tcp_pos.tolist() if last_tcp_pos is not None else 'N/A'}\n"
-            f"  last_error: {last_error:.5f} m\n"
-            f"  tolerance: {tol:.5f} m\n"
-            f"  timeout: {timeout_sec:.2f} s"
-        )
-        self.limpiar_objetivo_tcp_post_fase()
-        return False
-
     def distancia_angular_quat_deg(self, q1: np.ndarray, q2: np.ndarray) -> float:
         norm1 = np.linalg.norm(q1)
         norm2 = np.linalg.norm(q2)
@@ -3598,6 +3375,20 @@ class SingleArmFaceApproachGraspNode(Node):
         )
         return False
 
+    def obtener_gravity_z_bias(self, context: str) -> float:
+        if not self.gravity_z_compensation_enabled:
+            return 0.0
+        
+        if context == "shelf_pick":
+            return self.gravity_z_bias_global + self.gravity_z_bias_shelf_pick
+        elif context == "shelf_place":
+            return self.gravity_z_bias_global + self.gravity_z_bias_shelf_place
+        elif context == "table_approach":
+            return self.gravity_z_bias_global + self.gravity_z_bias_table_approach
+        elif context == "transit":
+            return self.gravity_z_bias_global + self.gravity_z_bias_transit
+        else:
+            return self.gravity_z_bias_global
 
     def limpiar_escena(self) -> None:
         self.get_logger().info('Limpiando escena de planificación...')
@@ -4165,8 +3956,8 @@ class SingleArmFaceApproachGraspNode(Node):
         self.object_is_attached = True
 
         self.get_logger().info(
-            'Objeto principal e interno adjuntados al TCP con touch_links de mano configurados. '
-            'Durante el transporte se permiten contactos mano-objeto del grasp virtual.'
+            'Objeto principal e interno adjuntados al TCP. '
+            'El objeto interno carece de touch_links en los dedos para simular sensor propioceptivo en RViz.'
         )
 
     def calcular_pose_objeto_attached_actual(self):
@@ -4463,14 +4254,32 @@ class SingleArmFaceApproachGraspNode(Node):
         # Stage outside pose for collision-free entry
         self.tcp_stage_outside = self.tcp_virtual_attach + shelf_out_dir * self.shelf_stage_distance_from_attach
 
-        # Copias geométricas base usadas por guardas de seguridad/diagnóstico.
-        # Se elimina el antiguo bias Z experimental porque alteraba targets geométricos
-        # del pipeline canónico y no fue validado.
+        # Guardar copias no sesgadas antes de aplicar bias Z por gravedad
         self.tcp_contact_unbiased = np.copy(self.tcp_contact)
         self.tcp_virtual_attach_unbiased = np.copy(self.tcp_virtual_attach)
         self.tcp_pregrasp_unbiased = np.copy(self.tcp_pregrasp)
         self.tcp_ready_unbiased = np.copy(self.tcp_ready)
         self.tcp_stage_outside_unbiased = np.copy(self.tcp_stage_outside)
+
+        # Aplicar bias Z por gravedad si está habilitado
+        if self.transfer_stage == "source_to_table":
+            context = "shelf_pick"
+        elif self.transfer_stage == "table_to_target":
+            context = "shelf_place"
+        else:
+            context = "unknown"
+            
+        bias_z = self.obtener_gravity_z_bias(context)
+        if bias_z != 0.0:
+            self.tcp_contact[2] += bias_z
+            self.tcp_virtual_attach[2] += bias_z
+            self.tcp_pregrasp[2] += bias_z
+            self.tcp_ready[2] += bias_z
+            self.tcp_stage_outside[2] += bias_z
+            self.get_logger().info(
+                f"[GRAVITY Z BIAS] context={context}, bias={bias_z:.4f}, "
+                f"tcp_ready_z={self.tcp_ready[2]:.4f}, tcp_contact_z={self.tcp_contact[2]:.4f}"
+            )
 
         # Logs diagnostic/audit
         dist_virtual = float(np.linalg.norm(self.tcp_virtual_attach - self.object_position))
@@ -5217,14 +5026,6 @@ class SingleArmFaceApproachGraspNode(Node):
                 self.abortar_objeto_actual(f"estado objetivo IK inválido para fase {phase} - {label}")
                 return
 
-        self.registrar_objetivo_tcp_post_fase(
-            phase=phase,
-            target_pos=pos,
-            target_quat=quat,
-            label=label,
-            source='ompl'
-        )
-
         names, positions = self.filtrar_joints_brazo(res_ik)
         self.enviar_meta_articular_brazo(names, positions, phase=phase, label=label)
 
@@ -5243,9 +5044,6 @@ class SingleArmFaceApproachGraspNode(Node):
         result = future.result().result
         if result.error_code.val == 1:
             self.get_logger().info(f'Fase {self.current_phase} completada correctamente.')
-            if not self.esperar_tcp_en_objetivo_post_fase(self.current_phase, context='move_group_result_callback'):
-                self.abortar_objeto_actual(f"Fase {self.current_phase}: TCP no alcanzó objetivo post-MoveIt dentro de tolerancia")
-                return
             if self.current_phase == 2 and self.manipulation_geometry_mode == 'shelf' and self.shelf_phase2_staged_enabled and not self.shelf_phase2_reached_outside:
                 self.shelf_phase2_reached_outside = True
                 self.ejecutar_fase_2_preagarre_elevado()
@@ -5363,7 +5161,6 @@ class SingleArmFaceApproachGraspNode(Node):
                 self.schedule_next_phase_after_settle()
         else:
             if self.current_phase == 8 and getattr(self, 'phase8_direct_preplace_pending_fallback', False):
-                self.limpiar_objetivo_tcp_post_fase()
                 self.get_logger().warn(
                     "[PHASE 8 DIRECT-FIRST FALLBACK] El plan directo a pre-place falló en MoveIt. "
                     "Se usará Fase 8 staged una sola vez como recuperación.\n"
@@ -7304,21 +7101,6 @@ class SingleArmFaceApproachGraspNode(Node):
             return
 
         names, positions = self.filtrar_joints_brazo(res_ik)
-
-        # [TCP POST-GATE PHASE BOUNDARY]
-        # No registrar targets para subpasos internos. Solo el último waypoint
-        # representa la aceptación de Fase 8 completa.
-        if i == total_wps - 1:
-            self.registrar_objetivo_tcp_post_fase(
-                phase=8,
-                target_pos=pos,
-                target_quat=quat,
-                label=f"fase 8 staged OMPL subpaso final {i+1}/{total_wps}",
-                source='ompl_staged_final'
-            )
-        else:
-            self.limpiar_objetivo_tcp_post_fase()
-
         self.enviar_meta_articular_brazo(
             names, positions, phase=8,
             label=f"fase 8 staged OMPL subpaso {i+1}/{total_wps}"
