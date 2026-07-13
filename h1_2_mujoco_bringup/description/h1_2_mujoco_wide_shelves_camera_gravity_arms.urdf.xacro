@@ -1,0 +1,33 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="h1_2_mujoco_wide_shelves">
+
+    <xacro:arg
+        name="initial_positions_file"
+        default="$(find h1_2_mujoco_bringup)/config/initial_positions.yaml" />
+
+    <!-- Real H1-2 kinematic/visual/collision model -->
+    <xacro:include filename="$(find h1_2_description)/urdf/h1_2.urdf" />
+
+    <!-- TCP links needed by your MoveIt manipulation logic -->
+    <link name="L_palm_tcp"/>
+    <joint name="L_hand_base_to_palm_tcp" type="fixed">
+        <parent link="L_hand_base_link"/>
+        <child link="L_palm_tcp"/>
+        <origin xyz="-0.010 -0.12 0.0" rpy="0.0 0.0 0.0"/>
+    </joint>
+
+    <link name="R_palm_tcp"/>
+    <joint name="R_hand_base_to_palm_tcp" type="fixed">
+        <parent link="R_hand_base_link"/>
+        <child link="R_palm_tcp"/>
+        <origin xyz="-0.010 -0.12 0.0" rpy="0.0 0.0 0.0"/>
+    </joint>
+
+    <!-- MuJoCo ros2_control hardware pointing to wide shelves -->
+    <xacro:include filename="$(find h1_2_mujoco_bringup)/description/h1_2_mujoco_wide_shelves_camera_gravity_arms.ros2_control.xacro" />
+
+    <xacro:h1_2_ros2_control
+        name="MujocoSystem"
+        initial_positions_file="$(arg initial_positions_file)" />
+
+</robot>
