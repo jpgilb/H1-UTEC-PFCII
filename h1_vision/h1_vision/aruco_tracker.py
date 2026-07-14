@@ -1,5 +1,20 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+"""
+Tracker de pose basado en marcadores ArUco para el Unitree H1-2.
+
+Responsabilidades principales:
+- detectar un marcador ArUco configurado en la imagen RGB;
+- utilizar los intrínsecos y coeficientes de distorsión de CameraInfo;
+- estimar la pose a partir del tamaño físico conocido del marcador;
+- evaluar la consistencia geométrica mediante error de reproyección;
+- suavizar temporalmente la pose estimada (posición y orientación);
+- publicar TF y PoseStamped en el marco de la cámara.
+
+Este nodo proporciona una referencia geométrica asociada con la mesa y no realiza
+calibración completa de la cámara ni estimación basada en profundidad. La transformación
+hacia el marco de pelvis se realiza posteriormente en el supervisor de alto nivel.
+"""
 
 import rclpy
 from rclpy.node import Node
@@ -25,9 +40,9 @@ def get_aruco_dictionary(name):
     }
     if name not in dict_map:
         raise ValueError(f"Diccionario ArUco no soportado: {name}")
-    
+
     dict_id = dict_map[name]
-    
+
     if hasattr(cv2.aruco, 'getPredefinedDictionary'):
         return cv2.aruco.getPredefinedDictionary(dict_id)
     elif hasattr(cv2.aruco, 'Dictionary_get'):
@@ -35,15 +50,20 @@ def get_aruco_dictionary(name):
     else:
         return getattr(cv2.aruco, name)
 
+# ============================================================
+# Responsabilidad general del detector ArUco
+# ============================================================
 class ArucoTrackerNode(Node):
     def __init__(self):
+        # ============================================================
+        # Inicialización y parámetros
+        # ============================================================
+
         super().__init__('aruco_tracker_node')
-        
-        # Validar modulo ArUco de OpenCV
+
         if not hasattr(cv2, "aruco"):
             raise RuntimeError("OpenCV no incluye el modulo aruco. Instalar opencv-contrib-python o usar una version de OpenCV con aruco.")
 
-        # Declarar parámetros
         self.declare_parameter('color_topic', '/camera/color/image_raw')
         self.declare_parameter('camera_info_topic', '/camera/color/camera_info')
         self.declare_parameter('camera_frame', '')
@@ -66,7 +86,6 @@ class ArucoTrackerNode(Node):
         self.declare_parameter('reject_if_ambiguous', True)
         self.declare_parameter('max_reprojection_error_px', 5.0)
 
-        # Cargar parámetros
         self.color_topic = str(self.get_parameter('color_topic').value).strip()
         self.camera_info_topic = str(self.get_parameter('camera_info_topic').value).strip()
         self.camera_frame = str(self.get_parameter('camera_frame').value).strip()
@@ -89,13 +108,11 @@ class ArucoTrackerNode(Node):
         self.reject_if_ambiguous = bool(self.get_parameter('reject_if_ambiguous').value)
         self.max_reprojection_error_px = float(self.get_parameter('max_reprojection_error_px').value)
 
-        # Regla de activación de debug visual
         if self.debug_visual:
             self.show_main_window = True
             self.show_debug_overlay = True
             self.show_axes = True
 
-        # Validaciones
         if self.marker_id < 0:
             raise ValueError("marker_id debe ser mayor o igual que 0")
         if self.marker_size_m <= 0.0:
@@ -113,24 +130,19 @@ class ArucoTrackerNode(Node):
         if not self.marker_frame:
             raise ValueError("marker_frame no debe estar vacio")
 
-        # Cargar diccionario ArUco
         self.aruco_dict = get_aruco_dictionary(self.aruco_dictionary_name)
-        
-        # Parámetros del detector ArUco
+
         if hasattr(cv2.aruco, 'DetectorParameters_create'):
             self.aruco_params = cv2.aruco.DetectorParameters_create()
         else:
             self.aruco_params = cv2.aruco.DetectorParameters()
 
-        # Nombres de ventana estandarizados
         self.main_window_name = self.marker_frame
 
-        # Estado de FPS
         self.frame_timestamps = deque(maxlen=self.fps_window_size)
         self.last_processing_time_ms = 0.0
         self.camera_fps_estimate = 0.0
 
-        # Histórico de tracking y errores
         self.last_tvec = None
         self.last_quat = None
         self.last_reprojection_error_px = None
@@ -138,11 +150,12 @@ class ArucoTrackerNode(Node):
         self.last_detection_stamp = None
         self.last_pose_log_time = 0.0
 
-        # Suscripciones
+        # ============================================================
+        # Interfaces ROS 2
+        # ============================================================
         self.subscription_color = self.create_subscription(Image, self.color_topic, self.image_callback, 10)
         self.info_sub = self.create_subscription(CameraInfo, self.camera_info_topic, self.camera_info_callback, 10)
 
-        # Publicadores
         self.tf_broadcaster = TransformBroadcaster(self)
         self.pose_pub = self.create_publisher(PoseStamped, self.pose_topic, 10)
 
@@ -151,7 +164,6 @@ class ArucoTrackerNode(Node):
         self.camera_matrix = None
         self.dist_coeffs = None
 
-        # Log de inicio en español
         self.get_logger().info(
             f"[DETECTOR ARUCO INICIALIZADO]\n"
             f"  Topico RGB: '{self.color_topic}'\n"
@@ -174,10 +186,10 @@ class ArucoTrackerNode(Node):
         timestamp = self.stamp_to_seconds(msg_stamp)
         if timestamp <= 0.0:
             timestamp = time.perf_counter()
-            
+
         if len(self.frame_timestamps) == 0 or timestamp > self.frame_timestamps[-1]:
             self.frame_timestamps.append(timestamp)
-            
+
         if len(self.frame_timestamps) >= 2:
             duration = self.frame_timestamps[-1] - self.frame_timestamps[0]
             if duration > 1e-6:
@@ -186,42 +198,58 @@ class ArucoTrackerNode(Node):
                 fps = 0.0
         else:
             fps = 0.0
-            
+
         self.camera_fps_estimate = min(fps, self.expected_camera_fps)
         self.last_processing_time_ms = processing_time_ms
 
+    # ============================================================
+    # Recepción de CameraInfo
+    # ============================================================
     def camera_info_callback(self, msg):
-        # Matriz K
+
+        # La matriz K contiene las distancias focales fx y fy en píxeles,
+        # además del punto principal cx y cy.
         self.camera_matrix = np.array([
             [msg.k[0], msg.k[1], msg.k[2]],
             [msg.k[3], msg.k[4], msg.k[5]],
             [msg.k[6], msg.k[7], msg.k[8]]
         ], dtype=np.float64)
-        
-        # Coeficientes de distorsión
+
         if msg.d and len(msg.d) > 0:
+        # D contiene los coeficientes de distorsión proporcionados
+        # por el modelo de cámara.
             self.dist_coeffs = np.array(msg.d, dtype=np.float64)
         else:
             self.dist_coeffs = np.zeros((5, 1), dtype=np.float64)
-            
+
         self.intrinsics_loaded = True
         self.get_logger().info("Intrinsecos de camara cargados para ArUco.")
         self.destroy_subscription(self.info_sub)
 
+    # ============================================================
+    # Interpolación lineal normalizada de la orientación
+    # ============================================================
+    # Se alinea primero el signo para mantener continuidad entre q y -q.
+    # Luego se aplica una interpolación lineal y se normaliza el resultado.
     def interpolate_quaternion(self, q1, q2, alpha):
-        # Asegurar el camino mas corto (short path)
+
         dot = np.dot(q1, q2)
+        # Se alinea el signo del cuaternión con la estimación anterior para
+        # evitar discontinuidades numéricas entre q y -q.
+
         if dot < 0.0:
             q2 = -q2
             dot = -dot
-            
-        # Interpolacion lineal (LERP) y normalizacion
+
         q_out = (1.0 - alpha) * q1 + alpha * q2
         norm = np.linalg.norm(q_out)
         if norm > 1e-6:
             return q_out / norm
         return q1
 
+    # ============================================================
+    # Publicación de resultados
+    # ============================================================
     def publish_aruco_tf_and_pose(self, tvec, quat_xyzw, stamp, source_frame="", reprojection_error_px=None):
         if tvec is None or quat_xyzw is None:
             return
@@ -229,20 +257,17 @@ class ArucoTrackerNode(Node):
         tvec = np.array(tvec, dtype=float).flatten()
         quat_xyzw = np.array(quat_xyzw, dtype=float).flatten()
 
-        # Validar NaN/Inf
         if np.any(np.isnan(tvec)) or np.any(np.isinf(tvec)):
             return
         if np.any(np.isnan(quat_xyzw)) or np.any(np.isinf(quat_xyzw)):
             return
 
-        # Normalizar quaternion
         norm_quat = np.linalg.norm(quat_xyzw)
         if norm_quat < 1e-6:
             quat_xyzw = np.array([0.0, 0.0, 0.0, 1.0])
         else:
             quat_xyzw = quat_xyzw / norm_quat
 
-        # Determinar frame_id
         frame_id = self.camera_frame if self.camera_frame else source_frame
         if not frame_id:
             now = time.time()
@@ -253,7 +278,6 @@ class ArucoTrackerNode(Node):
                 self.get_logger().warn("[DETECTOR ARUCO] Frame de camara vacio; se omite publicacion TF/Pose.")
             return
 
-        # Publicar TransformStamped
         if self.publish_tf:
             t = TransformStamped()
             t.header.stamp = stamp
@@ -268,7 +292,6 @@ class ArucoTrackerNode(Node):
             t.transform.rotation.w = quat_xyzw[3]
             self.tf_broadcaster.sendTransform(t)
 
-        # Publicar PoseStamped
         if self.publish_pose:
             pose_msg = PoseStamped()
             pose_msg.header.stamp = stamp
@@ -282,7 +305,6 @@ class ArucoTrackerNode(Node):
             pose_msg.pose.orientation.w = quat_xyzw[3]
             self.pose_pub.publish(pose_msg)
 
-        # Logs Throttled (1 por segundo)
         now = time.time()
         if now - self.last_pose_log_time >= 1.0:
             self.last_pose_log_time = now
@@ -292,6 +314,9 @@ class ArucoTrackerNode(Node):
                 f"id={self.marker_id} error_reproyeccion={err_str} px"
             )
 
+    # ============================================================
+    # Procesamiento principal de la imagen
+    # ============================================================
     def image_callback(self, msg):
         if not self.intrinsics_loaded:
             now = time.time()
@@ -304,9 +329,10 @@ class ArucoTrackerNode(Node):
 
         start_proc = time.perf_counter()
         try:
+
+            # Conversión del mensaje ROS a imagen OpenCV.
             cv_image = self.bridge.imgmsg_to_cv2(msg, "bgr8")
-            
-            # Detectar marcadores ArUco
+
             if hasattr(cv2.aruco, 'ArucoDetector'):
                 detector = cv2.aruco.ArucoDetector(self.aruco_dict, self.aruco_params)
                 corners, ids, rejected = detector.detectMarkers(cv_image)
@@ -318,7 +344,7 @@ class ArucoTrackerNode(Node):
             corners_of_interest = None
 
             if ids is not None:
-                # Buscar el marker_id configurado
+
                 for idx, mid in enumerate(ids.flatten()):
                     if mid == self.marker_id:
                         marker_found = True
@@ -328,25 +354,25 @@ class ArucoTrackerNode(Node):
             if not marker_found:
                 self.lost_frame_count += 1
                 self.last_reprojection_error_px = None
-                # No publicar nueva pose si se pierde el marcador
-                
-                # Mostrar ventana debug en modo original si corresponde
+
                 if self.show_main_window:
                     proc_ms = (time.perf_counter() - start_proc) * 1000.0
                     self.update_fps_estimate(msg.header.stamp, proc_ms)
-                    
+
                     titulo = f"{self.marker_frame} - FPS camara: {self.camera_fps_estimate:.1f} | Proc: {self.last_processing_time_ms:.1f} ms"
                     cv2.imshow(self.main_window_name, cv_image)
                     cv2.setWindowTitle(self.main_window_name, titulo)
                     cv2.waitKey(1)
                 return
 
-            # Si se encuentra el marcador:
             self.lost_frame_count = 0
             self.last_detection_stamp = msg.header.stamp
 
-            # Puntos 3D del marcador en su propio frame, centrados en el marcador
             s = self.marker_size_m / 2.0
+
+            # Selección del marcador y definición de sus coordenadas métricas 3D.
+            # El tamaño físico conocido del marcador define las coordenadas métricas
+            # de sus cuatro esquinas.
             object_points = np.array([
                 [-s,  s, 0.0],
                 [ s,  s, 0.0],
@@ -354,13 +380,18 @@ class ArucoTrackerNode(Node):
                 [-s, -s, 0.0]
             ], dtype=np.float32)
 
-            # solvePnP requiere los puntos de la imagen en formato float32 y shape (4, 2)
             image_points = corners_of_interest.reshape((4, 2)).astype(np.float32)
 
-            # PnP Solver Flags
             pnp_flag = cv2.SOLVEPNP_IPPE_SQUARE if hasattr(cv2, 'SOLVEPNP_IPPE_SQUARE') else cv2.SOLVEPNP_ITERATIVE
 
-            # El ArUco se utiliza como referencia geometrica de mesa. La orientacion completa se publica para permitir futuros offsets relativos al yaw del marcador, aunque la primera integracion con mover_brazo_single.py debe usar table_target_offset_mode='base'.
+            # ============================================================
+            # Estimación de pose
+            # ============================================================
+            # PnP estima la transformación del marcador respecto a la cámara
+            # utilizando correspondencias entre puntos 3D y esquinas 2D.
+            # rvec representa la rotación en formato eje–ángulo.
+            # tvec representa la posición del origen del marcador respecto
+            # al marco de la cámara, expresada en metros.
             success, rvec, tvec = cv2.solvePnP(
                 object_points,
                 image_points,
@@ -370,18 +401,17 @@ class ArucoTrackerNode(Node):
             )
 
             if not success:
-                # Mostrar ventana debug en modo original si corresponde
+
                 if self.show_main_window:
                     proc_ms = (time.perf_counter() - start_proc) * 1000.0
                     self.update_fps_estimate(msg.header.stamp, proc_ms)
-                    
+
                     titulo = f"{self.marker_frame} - FPS camara: {self.camera_fps_estimate:.1f} | Proc: {self.last_processing_time_ms:.1f} ms"
                     cv2.imshow(self.main_window_name, cv_image)
                     cv2.setWindowTitle(self.main_window_name, titulo)
                     cv2.waitKey(1)
                 return
 
-            # Validar profundidad
             current_tvec = tvec.flatten()
             if current_tvec[2] <= 0.0:
                 now = time.time()
@@ -390,19 +420,21 @@ class ArucoTrackerNode(Node):
                 if now - self._last_z_warn_time >= 1.0:
                     self._last_z_warn_time = now
                     self.get_logger().warn("[DETECTOR ARUCO] Pose rechazada: marcador detras de la camara o Z invalida.")
-                
-                # Mostrar ventana debug en modo original si corresponde
+
                 if self.show_main_window:
                     proc_ms = (time.perf_counter() - start_proc) * 1000.0
                     self.update_fps_estimate(msg.header.stamp, proc_ms)
-                    
+
                     titulo = f"{self.marker_frame} - FPS camara: {self.camera_fps_estimate:.1f} | Proc: {self.last_processing_time_ms:.1f} ms"
                     cv2.imshow(self.main_window_name, cv_image)
                     cv2.setWindowTitle(self.main_window_name, titulo)
                     cv2.waitKey(1)
                 return
 
-            # Calcular error de reproyección
+            # El error de reproyección compara las esquinas detectadas con las
+            # proyectadas nuevamente a partir de la pose estimada.
+            # Se expresa en píxeles y mide consistencia geométrica en la imagen.
+            # Un error reducido no garantiza por sí solo exactitud métrica en 3D.
             projected_points, _ = cv2.projectPoints(
                 object_points,
                 rvec,
@@ -411,11 +443,11 @@ class ArucoTrackerNode(Node):
                 self.dist_coeffs
             )
             projected_points = projected_points.reshape((4, 2))
-            
-            # Error medio de reproyección en pixeles
+
             reproj_error = float(np.mean(np.linalg.norm(image_points - projected_points, axis=1)))
             self.last_reprojection_error_px = reproj_error
 
+            # La estimación se rechaza cuando supera el umbral configurado.
             if self.reject_if_ambiguous and reproj_error > self.max_reprojection_error_px:
                 now = time.time()
                 if not hasattr(self, '_last_reproj_warn_time'):
@@ -423,36 +455,37 @@ class ArucoTrackerNode(Node):
                 if now - self._last_reproj_warn_time >= 1.0:
                     self._last_reproj_warn_time = now
                     self.get_logger().warn("[DETECTOR ARUCO] Error de reproyeccion alto; se rechaza deteccion.")
-                
-                # Mostrar ventana debug en modo original si corresponde
+
                 if self.show_main_window:
                     proc_ms = (time.perf_counter() - start_proc) * 1000.0
                     self.update_fps_estimate(msg.header.stamp, proc_ms)
-                    
+
                     titulo = f"{self.marker_frame} - FPS camara: {self.camera_fps_estimate:.1f} | Proc: {self.last_processing_time_ms:.1f} ms"
                     cv2.imshow(self.main_window_name, cv_image)
                     cv2.setWindowTitle(self.main_window_name, titulo)
                     cv2.waitKey(1)
                 return
 
-            # Estabilización temporal
-            # Posicion
+            # Suavizado lineal de la posición estimada.
             if self.last_tvec is None:
                 self.last_tvec = current_tvec.copy()
             else:
                 self.last_tvec = (1.0 - self.alpha_pos) * self.last_tvec + self.alpha_pos * current_tvec
 
-            # Orientación
+            # Rodrigues convierte el vector eje–ángulo rvec en una
+            # matriz de rotación de 3 x 3.
             rmat, _ = cv2.Rodrigues(rvec)
             rot = R.from_matrix(rmat)
-            current_quat = rot.as_quat() # [x, y, z, w]
+            # La matriz se convierte a cuaternión para suavizar y publicar
+            # la orientación mediante ROS 2.
+            current_quat = rot.as_quat()
 
+            # Suavizado N-LERP de la orientación después de alinear su signo.
             if self.last_quat is None:
                 self.last_quat = current_quat.copy()
             else:
                 self.last_quat = self.interpolate_quaternion(self.last_quat, current_quat, self.alpha_rot)
 
-            # Publicar
             self.publish_aruco_tf_and_pose(
                 self.last_tvec,
                 self.last_quat,
@@ -461,33 +494,31 @@ class ArucoTrackerNode(Node):
                 reprojection_error_px=self.last_reprojection_error_px
             )
 
-            # Interfaz Visual
             if self.show_main_window:
-                # Modo normal: dibujar contorno del ArUco detectado y el centro del marcador
+
                 pts_cnt = image_points.astype(np.int32).reshape((-1, 1, 2))
-                cv2.polylines(cv_image, [pts_cnt], True, (0, 255, 0), 2) # Contorno en verde
-                
-                # Calcular centro en imagen
+
+                # Visualización de depuración.
+                cv2.polylines(cv_image, [pts_cnt], True, (0, 255, 0), 2)
+
                 cx_img = int(np.mean(image_points[:, 0]))
                 cy_img = int(np.mean(image_points[:, 1]))
-                cv2.circle(cv_image, (cx_img, cy_img), 5, (0, 0, 255), -1) # Centro en rojo
+                cv2.circle(cv_image, (cx_img, cy_img), 5, (0, 0, 255), -1)
 
                 if self.show_debug_overlay:
-                    # Mostrar ejes 3D
+
                     if self.show_axes:
                         if hasattr(cv2, 'drawFrameAxes'):
                             cv2.drawFrameAxes(cv_image, self.camera_matrix, self.dist_coeffs, rvec, tvec, self.axis_length_m)
                         elif hasattr(cv2.aruco, 'drawAxis'):
                             cv2.aruco.drawAxis(cv_image, self.camera_matrix, self.dist_coeffs, rvec, tvec, self.axis_length_m)
-                    
-                    # Dibujar HUD debug
+
                     proc_ms = (time.perf_counter() - start_proc) * 1000.0
                     self.update_fps_estimate(msg.header.stamp, proc_ms)
-                    
+
                     err_val = f"{self.last_reprojection_error_px:.2f}" if self.last_reprojection_error_px is not None else "N/A"
                     frame_id_res = self.camera_frame if self.camera_frame else msg.header.frame_id
-                    
-                    # Textos del HUD traducidos sin acentos
+
                     cv2.putText(cv_image, f"ID marcador: {self.marker_id}", (15, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
                     cv2.putText(cv_image, f"Z [m]: {self.last_tvec[2]:.3f}", (15, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
                     cv2.putText(cv_image, f"Error reproyeccion [px]: {err_val}", (15, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
@@ -497,7 +528,7 @@ class ArucoTrackerNode(Node):
                     cv2.putText(cv_image, f"Frame camara: {frame_id_res}", (15, 150), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
                     cv2.putText(cv_image, f"Frame marcador: {self.marker_frame}", (15, 170), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
                 else:
-                    # En modo normal, igual calcular FPS
+
                     proc_ms = (time.perf_counter() - start_proc) * 1000.0
                     self.update_fps_estimate(msg.header.stamp, proc_ms)
 
@@ -509,6 +540,10 @@ class ArucoTrackerNode(Node):
         except Exception as e:
             self.get_logger().error(f"Error en image_callback: {e}")
 
+
+# ============================================================
+# Punto de entrada
+# ============================================================
 def main(args=None):
     rclpy.init(args=args)
     node = ArucoTrackerNode()

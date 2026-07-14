@@ -1,3 +1,13 @@
+#!/usr/bin/env python3
+"""
+Launch de visión del cubo y del marcador de referencia para MuJoCo.
+
+Utiliza ExecuteProcess para ejecutar los scripts de visión en Python desde
+una ruta construida manualmente. Inicia el tracker RGB-D del cubo (object_tracker_mujoco.py),
+el tracker del marcador ArUco de la mesa (aruco_tracker.py) y publica la pose estática
+de la cámara respecto a la pelvis del robot.
+"""
+
 from launch import LaunchDescription
 from launch.actions import ExecuteProcess
 from launch_ros.actions import Node
@@ -12,6 +22,12 @@ def generate_launch_description():
 
     # TF estático coherente con la cámara MuJoCo orientada con respecto al frame base pelvis:
     # xyaxes="0 -1 0 0.835 0 0.550"
+    # ============================================================
+    # Publicador del frame estático de la cámara con respecto a pelvis
+    # ============================================================
+    # ============================================================
+    # Publicador del frame estático de la cámara con respecto a pelvis
+    # ============================================================
     camera_static_tf = Node(
         package='tf2_ros',
         executable='static_transform_publisher',
@@ -30,6 +46,12 @@ def generate_launch_description():
         ],
     )
 
+    # ============================================================
+    # Nodo de estimación de pose de mesa mediante marcadores ArUco
+    # ============================================================
+    # ============================================================
+    # Nodo de estimación de pose de mesa mediante marcadores ArUco
+    # ============================================================
     aruco_tracker = ExecuteProcess(
         cmd=[
             'python3', aruco_script,
@@ -53,6 +75,12 @@ def generate_launch_description():
         emulate_tty=True,
     )
 
+    # ============================================================
+    # Nodo de tracking RGB-D de posición y orientación del cubo
+    # ============================================================
+    # ============================================================
+    # Nodo de tracking RGB-D de posición y orientación del cubo
+    # ============================================================
     cube_tracker = ExecuteProcess(
         cmd=[
             'python3', cube_script,

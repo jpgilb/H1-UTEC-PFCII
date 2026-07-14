@@ -1,4 +1,11 @@
 #!/usr/bin/env python3
+"""
+Launch de bringup del robot H1-2 en MuJoCo con controladores dinámicos.
+
+Configura la simulación física, carga la descripción cinemática y dinámica,
+inicia robot_state_publisher, ros2_control y spawnea los controladores de
+esfuerzo, torso y manos. Además, arranca el controlador dinámico de retención.
+"""
 
 from launch import LaunchDescription
 from launch.actions import TimerAction, DeclareLaunchArgument
@@ -31,6 +38,12 @@ def controller_spawner(controller_name, delay):
 def generate_launch_description():
     pkg = FindPackageShare("h1_2_mujoco_bringup")
 
+    # ============================================================
+    # Carga de la descripción del robot (URDF/Xacro)
+    # ============================================================
+    # ============================================================
+    # Carga de la descripción del robot (URDF/Xacro)
+    # ============================================================
     robot_description_content = ParameterValue(
         Command([
             "xacro ",
@@ -54,6 +67,12 @@ def generate_launch_description():
         "ros2_controllers_dynamics.yaml",
     ])
 
+    # ============================================================
+    # Publicador del estado del robot (TF y descripción)
+    # ============================================================
+    # ============================================================
+    # Publicador del estado del robot (TF y descripción)
+    # ============================================================
     robot_state_publisher = Node(
         package="robot_state_publisher",
         executable="robot_state_publisher",
@@ -61,6 +80,12 @@ def generate_launch_description():
         parameters=[robot_description],
     )
 
+    # ============================================================
+    # Nodo puente ros2_control para MuJoCo
+    # ============================================================
+    # ============================================================
+    # Nodo puente ros2_control para MuJoCo
+    # ============================================================
     control_node = Node(
         package="mujoco_ros2_control",
         executable="ros2_control_node",
@@ -73,6 +98,12 @@ def generate_launch_description():
     )
 
     # Launch arguments
+    # ============================================================
+    # Parámetros y ganancias del controlador dinámico
+    # ============================================================
+    # ============================================================
+    # Parámetros y ganancias del controlador dinámico
+    # ============================================================
     control_rate_hz_arg = DeclareLaunchArgument('control_rate_hz', default_value='100.0')
     gravity_scale_arg = DeclareLaunchArgument('gravity_scale', default_value='1.0')
     torque_sign_arg = DeclareLaunchArgument('torque_sign', default_value='1.0')
@@ -92,6 +123,12 @@ def generate_launch_description():
     telemetry_rate_hz_arg = DeclareLaunchArgument('telemetry_rate_hz', default_value='50.0')
     telemetry_config_id_arg = DeclareLaunchArgument('telemetry_config_id', default_value='C2_nominal')
 
+    # ============================================================
+    # Nodo controlador de retención dinámica por esfuerzo articular
+    # ============================================================
+    # ============================================================
+    # Nodo controlador de retención dinámica por esfuerzo articular
+    # ============================================================
     hold_controller_node = TimerAction(
         period=4.5,
         actions=[
@@ -149,6 +186,11 @@ def generate_launch_description():
         robot_state_publisher,
         control_node,
 
+        # ============================================================
+        # Secuencia temporal de carga de controladores ros2_control.
+        # ============================================================
+        # Los retardos reducen condiciones de carrera durante el arranque,
+        # pero no constituyen una comprobación determinista de disponibilidad.
         controller_spawner("joint_state_broadcaster", 2.0),
         controller_spawner("left_arm_effort_controller", 3.0),
         controller_spawner("right_arm_effort_controller", 3.5),

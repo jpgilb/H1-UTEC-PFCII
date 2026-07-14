@@ -1,4 +1,11 @@
 #!/usr/bin/env python3
+"""
+Launch de MoveIt 2 para la planificación de trayectorias del H1-2.
+
+Carga la descripción del robot (URDF/SRDF), los límites de articulaciones,
+la configuración cinemática y del planificador OMPL. Inicia el nodo principal
+move_group, pero no ejecuta la simulación ni el lazo de control dinámico.
+"""
 
 import os
 import yaml
@@ -67,6 +74,12 @@ def generate_launch_description():
 
     ompl_yaml = load_yaml(moveit_pkg, "config/ompl_planning.yaml")
 
+    # ============================================================
+    # Configuración de los pipelines de planificación (OMPL)
+    # ============================================================
+    # ============================================================
+    # Configuración de los pipelines de planificación (OMPL)
+    # ============================================================
     planning_pipelines_config = {
         "planning_pipelines": ["ompl"],
         "default_planning_pipeline": "ompl",
@@ -87,6 +100,12 @@ def generate_launch_description():
             }
         }
 
+    # ============================================================
+    # Configuración de la ejecución y monitoreo de trayectorias
+    # ============================================================
+    # ============================================================
+    # Configuración de la ejecución y monitoreo de trayectorias
+    # ============================================================
     trajectory_execution = {
         "moveit_manage_controllers": False,
         "trajectory_execution.allowed_execution_duration_scaling": 2.0,
@@ -101,6 +120,15 @@ def generate_launch_description():
         "publish_transforms_updates": True,
     }
 
+    # ============================================================
+    # Nodo principal de MoveIt 2 (move_group)
+    # ============================================================
+    # ============================================================
+    # Nodo principal de MoveIt 2 (move_group)
+    # ============================================================
+    # El nodo move_group realiza la planificación y supervisa la ejecución.
+    # Las trayectorias se entregan a los controladores configurados mediante
+    # moveit_controllers.yaml. MoveIt no calcula los torques directamente.
     move_group_node = Node(
         package="moveit_ros_move_group",
         executable="move_group",

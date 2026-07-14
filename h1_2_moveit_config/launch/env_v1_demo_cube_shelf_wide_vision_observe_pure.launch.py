@@ -1,5 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+"""
+Launch final del supervisor bimanual en modo de visión pura.
+
+Inicia únicamente mover_brazo_single.py con la pose inicial del cubo obtenida
+desde el frame objeto_cubo_vision. No publica un TF estático ficticio del
+objeto y no inicia MuJoCo, MoveIt 2, percepción ni el controlador dinámico.
+"""
 
 import os
 from launch import LaunchDescription
@@ -16,7 +23,9 @@ def generate_launch_description():
     # La pose inicial del cubo debe venir de object_frame:=objeto_cubo_vision.
 
     declared_arguments = [
-        # General parameters
+        # ============================================================
+        # 1. Argumentos generales del supervisor
+        # ============================================================
         DeclareLaunchArgument(
             'arm_side',
             default_value='left',
@@ -29,6 +38,8 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'object_frame',
+            # La pose inicial del objeto procede del tracker RGB-D.
+            # Esta versión no crea una referencia TF estática para el cubo.
             default_value='objeto_cubo_vision',
             description='Frame TF2 del objeto a manipular'
         ),
@@ -48,7 +59,9 @@ def generate_launch_description():
             description='Habilitar cola de objetos'
         ),
 
-        # Task parameters
+        # ============================================================
+        # 2. Configuración de la tarea bimanual
+        # ============================================================
         DeclareLaunchArgument(
             'task_mode',
             default_value='bimanual_transfer',
@@ -101,6 +114,9 @@ def generate_launch_description():
         ),        
 
         DeclareLaunchArgument(
+        # ============================================================
+        # 3. Geometría de acceso a los estantes
+        # ============================================================
             'shelf_access_direction_mode',
             default_value='base_axis',
             description='Modo de dirección de acceso al estante'
@@ -190,7 +206,9 @@ def generate_launch_description():
             description='Valores de yaw en grados para evaluar separados por comas'
         ),
 
-        # Table & ArUco parameters
+        # ============================================================
+        # 4. Referencia ArUco y mesa intermedia
+        # ============================================================
         DeclareLaunchArgument(
             'table_collision',
             default_value='true',
@@ -248,7 +266,9 @@ def generate_launch_description():
             description='Referencia de la pose del objeto (center o top_face_center)'
         ),
 
-        # Motion & Cartesian parameters
+        # ============================================================
+        # 5. Modos de movimiento y validaciones geométricas
+        # ============================================================
         DeclareLaunchArgument(
             'use_cartesian_local_motions',
             default_value='false',
@@ -320,6 +340,9 @@ def generate_launch_description():
             description='Timeout/ventana de confirmación de apertura antes del detach'
         ),
         DeclareLaunchArgument(
+        # ============================================================
+        # 6. Liberación del objeto y cambio de etapa
+        # ============================================================
             'register_release_pose_from_attached_tcp',
             default_value='true',
             description='Registrar pose real del objeto desde TCP attached al soltar'
@@ -360,7 +383,9 @@ def generate_launch_description():
             description='Forzar retirada cartesiana de mesa antes de volver a home'
         ),
 
-        # Phase 8 parameters
+        # ============================================================
+        # 7. Configuración de la fase 8
+        # ============================================================
         DeclareLaunchArgument(
             'phase8_motion_mode',
             default_value='auto',
@@ -413,7 +438,9 @@ def generate_launch_description():
             description='Intentar OMPL directo a preplace antes de staged en Fase 8'
         ),
 
-        # OMPL planner selection
+        # ============================================================
+        # 8. Parámetros OMPL y reducción de velocidad cerca del objeto
+        # ============================================================
         DeclareLaunchArgument(
             'ompl_pipeline_id',
             default_value='ompl',
@@ -501,7 +528,9 @@ def generate_launch_description():
             description='Multiplicador de tiempo para trayectorias cartesianas cerca del objeto'
         ),
 
-        # Environment Scene parameters
+        # ============================================================
+        # 9. Geometría de la Planning Scene
+        # ============================================================
         DeclareLaunchArgument(
             'environment_scene_enabled',
             default_value='true',
@@ -613,6 +642,9 @@ def generate_launch_description():
         ),
     ]
 
+    # ============================================================
+    # 10. Creación del nodo supervisor
+    # ============================================================
     mover_brazo_single_node = Node(
         package=package_name,
         executable='mover_brazo_single.py',
@@ -631,7 +663,11 @@ def generate_launch_description():
             'table_transfer_y': LaunchConfiguration('table_transfer_y'),
             'table_collision': LaunchConfiguration('table_collision'),
             'use_aruco_table_target': LaunchConfiguration('use_aruco_table_target'),
+            # El primer destino válido calculado desde ArUco se conserva
+            # como referencia geométrica de la mesa durante el ciclo.
             'freeze_aruco_table_target': True,
+            # Observación diagnóstica de la pose visual después de la primera transferencia.
+            # No actualiza el objetivo, la Planning Scene ni activa una replanificación.
             'observe_vision_table_object_pose': True,
             'vision_table_object_frame': 'objeto_cubo_vision',
             'vision_table_sample_count': 5,
@@ -664,8 +700,12 @@ def generate_launch_description():
             'confirm_hand_open_before_detach': LaunchConfiguration('confirm_hand_open_before_detach'),
             'hand_open_position_tolerance': LaunchConfiguration('hand_open_position_tolerance'),
             'release_settle_time': LaunchConfiguration('release_settle_time'),
+            # La segunda etapa reutiliza la pose registrada desde la relación
+            # objeto–TCP en el momento de la liberación.
             'register_release_pose_from_attached_tcp': LaunchConfiguration('register_release_pose_from_attached_tcp'),
             'use_registered_release_pose_for_next_stage': LaunchConfiguration('use_registered_release_pose_for_next_stage'),
+            # El estado lógico del objeto no se publica hacia MuJoCo hasta
+            # disponer de una referencia visual inicial válida.
             'publish_object_state_only_after_initial_tf': LaunchConfiguration('publish_object_state_only_after_initial_tf'),
             'clamp_table_release_z_to_support': LaunchConfiguration('clamp_table_release_z_to_support'),
             'table_release_z_clamp_tolerance': LaunchConfiguration('table_release_z_clamp_tolerance'),
@@ -705,6 +745,9 @@ def generate_launch_description():
             'environment_add_shelves_to_planning_scene': LaunchConfiguration('environment_add_shelves_to_planning_scene'),
             'yaw_offset_left_deg': LaunchConfiguration('yaw_offset_left_deg'),
             'yaw_offset_right_deg': LaunchConfiguration('yaw_offset_right_deg'),
+        # ============================================================
+        # 3. Geometría de acceso a los estantes
+        # ============================================================
             'shelf_access_direction_mode': LaunchConfiguration('shelf_access_direction_mode'),
             'shelf_out_dir_x': LaunchConfiguration('shelf_out_dir_x'),
             'shelf_out_dir_y': LaunchConfiguration('shelf_out_dir_y'),
@@ -745,9 +788,11 @@ def generate_launch_description():
         }]
     )
 
-    # Static transform publisher node to publish object_frame (objeto_cubo) deterministically
 
 
+    # ============================================================
+    # 11. Composición final del LaunchDescription
+    # ============================================================
     return LaunchDescription(declared_arguments + [
         mover_brazo_single_node
     ])
